@@ -5,7 +5,7 @@
 #define SIZE 20
 
 static void
-print_paren(unsigned int *arr, size_t size, char* buf)
+print_paren(unsigned int *arr, size_t size)
 {
 	size_t arr_idx;
 	size_t i;
@@ -14,12 +14,13 @@ print_paren(unsigned int *arr, size_t size, char* buf)
 	i = 0;
 	for(; i < size * 2; i++) {
 		if (arr_idx >= size || arr[arr_idx] > i) {
-			buf[i] = ')';
+			putchar(')');
 		} else {
-			buf[i] = '(';
+			putchar('(');
 			arr_idx += 1;
 		}
 	}
+	putchar('\n');
 }
 
 static bool
@@ -48,9 +49,7 @@ main(void)
 {
 	size_t i;
 	unsigned int arr[SIZE];
-	char buf[SIZE + 1];
 
-	buf[SIZE] = '\0';
 	i = 0;
 	for (; i < SIZE; i++) {
 		arr[i] = i * 2;
@@ -58,9 +57,7 @@ main(void)
 
 	i = 0;
         do {
-		if (i++ % 100000000 == 0) {
-			print_paren(arr, SIZE, buf);
-			puts(buf);
-		}
+		if (i++ % 100000000 == 0)
+			print_paren(arr, SIZE);
         } while (next_paren(arr, SIZE));
 }
