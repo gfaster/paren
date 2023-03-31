@@ -57,8 +57,7 @@ main(void)
 
 	i = 0;
         do {
-		if (i++ % (1l << 22) == 0)
-			print_paren(arr, SIZE);
+		print_paren(arr, SIZE);
         } while (next_paren(arr, SIZE));
 	printf("%lu\n", i);
 }
