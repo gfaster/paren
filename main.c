@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #define SIZE 20
+#define PSIZE (SIZE * 2)
 #define CACHESIZE 1024
 
 #define BUFCNT (CACHESIZE / (2 * SIZE + 1))
@@ -104,22 +105,20 @@ static void
 print_paren(unsigned int *arr)
 {
 	int i;
-	int arr_i;
 	char c;
 
+	// set all elements of line to close paren
+	// XOR with 0x1 to make open paren (0x28)
+	memset(&buf[off], 0x29, PSIZE);
+
 	i = 0;
-	arr_i = 0;
-	for (; i < SIZE * 2; i++) {
-		c = 0x29;
-		if (arr_i < SIZE && arr[arr_i] <= i) {
-			c ^= 1;
-			arr_i += 1;
-		}
-		buf[off++] = c;
+	for (; i < SIZE; i++) {
+		buf[off + arr[i]] ^= 1;
 	}
+	off += PSIZE;
 	buf[off++] = '\n';
 
-	if (off >= CACHESIZE - (SIZE * 2 + 1)) {
+	if (off >= CACHESIZE - (PSIZE + 1)) {
 		write(STDOUT_FILENO, buf, off);
 		off = 0;
 	}
