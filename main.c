@@ -13,48 +13,28 @@
 #define FIN (((1ULL << SIZE) - 1) << SIZE)
 #define CACHESIZE 1024
 
-#define BUFCNT (CACHESIZE / (2 * SIZE + 1))
+#define BUFCNT (CACHESIZE / (PSIZE + 1))
 
 #define BATCH_64 (1 + (PSIZE / 8))
 #define BATCH_128 (1 + (PSIZE / 16))
 #define BATCH_256 (1 + (PSIZE / 32))
 
+// https://stackoverflow.com/a/1898487
+#define is_aligned(ptr, align) \
+    (((uintptr_t)(const void *)(ptr)) % (align) == 0)
+
 static char buf[CACHESIZE];
-static int off = 0;
-
-static void
-print_paren(unsigned int *arr)
-{
-	int i;
-	char c;
-
-	// set all indicies in arr to '(' and others to ')'
-	// '(' is hex 28 and ')' is hex 29
-	// this means that we can just OR with 0x1 to make close paren
-
-	// set all elements of line to close paren
-	// XOR with 0x1 to make open paren (0x28)
-	memset(&buf[off], 0x29, PSIZE);
-
-	i = 0;
-	for (; i < SIZE; i++) {
-		buf[off + arr[i]] ^= 1;
-	}
-	off += PSIZE;
-	buf[off++] = '\n';
-
-	// flush buffer if full
-	if (off >= CACHESIZE - (PSIZE + 1)) {
-		write(STDOUT_FILENO, buf, off);
-		off = 0;
-	}
-}
+static char* cursor = buf;
 
 static void
 print_paren_bitmask(uint64_t paren)
 {
 	int i;
+	size_t off;
 	char c;
+	uint64_t res;
+	char *init_cur;
+	uint64_t base, mask;
 
 	// set all indicies in arr to '(' and others to ')'
 	// '(' is hex 28 and ')' is hex 29
@@ -62,38 +42,51 @@ print_paren_bitmask(uint64_t paren)
 
 	// set all elements of line to close paren
 	// XOR with 0x1 to swap paren open/close
-	memset(&buf[off], 0x28, PSIZE);
+	memset(cursor, 0x28, PSIZE);
+	init_cur = cursor;
 
-	i = 0;
-	for (; i < PSIZE; i++) {
-		buf[off++] |= paren & 1;
+	// TODO: try splitting this up into finer lanes
+	while(!is_aligned(cursor, 8)) {
+		*cursor++ = 0x28 | (paren & 1);
 		paren >>= 1;
 	}
-	buf[off++] = '\n';
+
+	base = 0x2828282828282828;
+	mask = 0x0101010101010101;
+	i = 0;
+	for (; i < BATCH_64; i++) {
+		res = base | _pdep_u64(paren, mask);
+		*((uint64_t *)cursor) = res;
+		cursor += 8;
+		paren >>= 8;
+	}
+	cursor = init_cur + PSIZE;
+	*cursor++ = '\n';
 
 	// flush buffer if full
-	if (off >= CACHESIZE - (PSIZE + 1)) {
+	off = (uintptr_t) cursor - (uintptr_t) buf;
+	if (off >= CACHESIZE - ((1 + BATCH_64) * 8)) {
 		write(STDOUT_FILENO, buf, off);
-		off = 0;
+		cursor = buf;
 	}
 }
 
 /*
  * properties:
  *
- * swapping adjacent (cpp, opp) -> (opp, cpp) is always valid
+ * swapping adjacent (clp, opp) -> (opp, clp) is always valid
  */
 
 
 /*
  * general strategy:
  *
- * arr stores the position of every open parenthesis.
- * an open parenthesis (opp) can be moved left, but should never occupy the same
- * space as another opp. At the end, all opps will be packed left.
+ * curr is a bitmask of all the close parentheses (clp) with LSb the start of
+ * the output string. 
  *
- * By representing opps as a bitmask, we can XOR the mask with a rshift by one
- * to get zeros where the next bit is the same
+ * We find the rightmost contiguous bit, and reset all but the MSb of the
+ * contiguous group that it's in to the original position. We then take that
+ * remaining bit and swap it with the next most significant bit
  */
 
 static uint64_t
@@ -116,26 +109,6 @@ next_paren_bitmask(uint64_t curr)
 
 	const uint64_t orig = 0xAAAAAAAAAAAAAAAA; // 0b1010...
 	return swp ^ (curr & ~mask) | (orig & (mask >> 1));
-}
-
-static bool
-next_paren(unsigned int *arr)
-{
-	// Naive implementation:
-
-	// i = SIZE - 1;
-	// for (; i > 0; i--) {
-	// 	arr[i] -= 1;
-	//
-	// 	if (arr[i] >= i && arr[i] > arr[i - 1])
-	// 		break;
-	// 	if (i == 1) 
-	// 		return false;
-	// 		
-	// 	arr[i] = i * 2;
-	// }
-
-	return true;
 }
 
 int 
