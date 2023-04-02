@@ -5,14 +5,20 @@
 #include <unistd.h>
 #include <stdint.h>
 
+// number of parenthesis pairs
 #define SIZE 20
+
+// number of parenthesis characters in output
 #define PSIZE (SIZE * 2)
+
+// bitmask of parenthesis
 #define PMASK ((1ULL << PSIZE) - 1)
+
+// End state
 #define FIN (((1ULL << SIZE) - 1) << SIZE)
 #define CACHESIZE 4096
 
-#define BUFCNT (CACHESIZE / (PSIZE + 1))
-
+// how many iterations needed to print output in _N bit batches
 #define BATCH_64 (1 + (PSIZE / 8))
 #define BATCH_128 (1 + (PSIZE / 16))
 #define BATCH_256 (1 + (PSIZE / 32))
@@ -34,20 +40,19 @@ print_paren_bitmask(uint64_t paren)
 	char *init_cur;
 	uint64_t base, mask;
 
-	// set all indicies in arr to '(' and others to ')'
+	init_cur = cursor;
+
+	// map all unset bits in paren to '(' and set bits to ')'
 	// '(' is hex 28 and ')' is hex 29
 	// this means that we can just OR with 0x1 to make close paren
 
-	// set all elements of line to close paren
-	// XOR with 0x1 to swap paren open/close
-	memset(cursor, 0x28, PSIZE);
-	init_cur = cursor;
-
+	// byte-wise write until 4-byte aligned
 	while(!is_aligned(cursor, 4)) {
 		*cursor++ = 0x28 | (paren & 1);
 		paren >>= 1;
 	}
 
+	// deposit u32 to get up to 8-byte alignment
 	if(!is_aligned(cursor, 8)) {
 		res = 0x28282828 | _pdep_u32(paren, 0x01010101);
 		*((uint32_t *)cursor) = res;
@@ -59,15 +64,21 @@ print_paren_bitmask(uint64_t paren)
 	mask = 0x0101010101010101;
 	i = 0;
 	for (; i < BATCH_64; i++) {
+		// deposit instr writes the contiguous low bits of arg0 in the
+		// pos of each set bit of arg1. Here, I set the lowest bit of
+		// each byte in the u64 to the corresponding bits in the lowest
+		// byte of paren.
 		res = base | _pdep_u64(paren, mask);
 		*((uint64_t *)cursor) = res;
 		cursor += 8;
 		paren >>= 8;
 	}
+
+	// set cursor based on initial pos because it probably overshot
 	cursor = init_cur + PSIZE;
 	*cursor++ = '\n';
 
-	// flush buffer if full
+	// flush buffer if next iter could overflow it
 	off = (uintptr_t) cursor - (uintptr_t) buf;
 	if (off >= CACHESIZE - ((1 + BATCH_64) * 8)) {
 		write(STDOUT_FILENO, buf, off);
