@@ -1,8 +1,6 @@
 #include <stddef.h>
-#include <stdio.h>
 #include <stdbool.h>
 #include <immintrin.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdint.h>
@@ -11,7 +9,7 @@
 #define PSIZE (SIZE * 2)
 #define PMASK ((1ULL << PSIZE) - 1)
 #define FIN (((1ULL << SIZE) - 1) << SIZE)
-#define CACHESIZE 1024
+#define CACHESIZE 4096
 
 #define BUFCNT (CACHESIZE / (PSIZE + 1))
 
