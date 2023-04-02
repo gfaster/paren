@@ -60,7 +60,6 @@ print_paren_bitmask(uint64_t paren)
 	}
 
 	base = 0x2828282828282828;
-	// base = 0x3030303030303030;
 	mask = 0x0101010101010101;
 	i = 0;
 	for (; i < BATCH_64; i++) {
@@ -103,8 +102,8 @@ print_paren_bitmask(uint64_t paren)
  * contiguous group that it's in to the original position. We then take that
  * remaining bit and swap it with the next most significant bit
  *
- * This is optimized by adding a bit that's shifted to start of group, which is
- * effectively a swap and clear at once
+ * This is optimized by adding a 1 that's shifted to start of group, which is
+ * effectively a swap and clear simultaniously
  */
 
 static uint64_t
@@ -116,11 +115,13 @@ next_paren_bitmask(uint64_t curr)
 	// number of contig bits grouped with first
 	const uint64_t contig = _tzcnt_u64(~(curr >> first));
 
-	// mask of the bits to be reset to starting pos
-	const uint64_t mask = (1 << ((contig - 1) * 2)) - 1;
-
+	// original bit positions
 	const uint64_t orig = 0xAAAAAAAAAAAAAAAA; // 0b1010...
-	return (curr + (1 << first)) | (orig & mask);
+
+	// the bits that are to be reset deposited to their original positions
+	const uint64_t rst = _pdep_u64((1 << (contig - 1)) - 1, orig);
+
+	return (curr + (1 << first)) | rst;
 }
 
 int 
