@@ -5,3 +5,4 @@ v2.0: 713MiB/s
 v2.1: 1.55GiB/s
 v2.2: 1.72GiB/s
 v2.3: 2.75GiB/s
+v2.4: 2.94GiB/s
