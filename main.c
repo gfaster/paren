@@ -5,107 +5,32 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdint.h>
 
 #define SIZE 20
 #define PSIZE (SIZE * 2)
+#define PMASK ((1ULL << PSIZE) - 1)
+#define FIN (((1ULL << SIZE) - 1) << SIZE)
 #define CACHESIZE 1024
 
 #define BUFCNT (CACHESIZE / (2 * SIZE + 1))
 
-#define BATCH_64 (1 + (2 * SIZE / 8))
-#define BATCH_128 (1 + (2 * SIZE / 16))
-#define BATCH_256 (1 + (2 * SIZE / 32))
+#define BATCH_64 (1 + (PSIZE / 8))
+#define BATCH_128 (1 + (PSIZE / 16))
+#define BATCH_256 (1 + (PSIZE / 32))
 
 static char buf[CACHESIZE];
 static int off = 0;
-
-// set 8 chars of buf at off parens
-// always 8 chars, no fewer
-inline static void
-prnt8(__m256i mask)
-{
-	/* 
-	 * _mm256_shuffle_epi8 to set chars
-	 *
-	 */
-
-	// set all indicies in arr to '(' and others to ')'
-	// '(' is hex 28 and ')' is hex 29
-	// this means that we can just OR with 0x1 to make close paren
-
-	__m256i close;
-	__m256i open;
-	__m256i dst;
-
-	open = _mm256_set1_epi8('(');
-	close = _mm256_set1_epi8(')');
-	dst = _mm256_blendv_epi8(close, open, mask);
-	_mm256_storeu_si256((__m256i *) &buf[off], dst);
-}
-
-/*
-static void
-print_paren_simd(unsigned int *arr)
-{
-	size_t arr_idx;
-	size_t i;
-
-	__m128i open, close;
-
-
-	__m256i tbuf[BATCH_256];
-
-	__m256i intvl, accintvl;
-	__m256i zero, minusone;
-	__m256i dst, dstmask;
-
-	close = _mm_set1_epi8(1);
-	open = _mm_set1_epi8(0x28);
-	intvl = _mm256_set1_epi32(8);
-	accintvl = intvl;
-	zero = _mm256_set1_epi32(0);
-	minusone = _mm256_set1_epi32(-1);
-
-	i = 0;
-	arr_idx = 0;
-	for (; i < BATCH_64; i++) {
-		// load the component of the vector
-		// Using lddqu since probably not aligned
-		dst = _mm256_lddqu_si256(&arr[i]);
-
-		// decrease so useful range is 0 < x < 8
-		dst = _mm256_sub_epi32(dst, accintval);
-
-		// create a mask of only valid indices
-		dstmask = _mm256_cmplt_epi32(intvl, dst);
-		dstmask = _mm256_cmpgt_epi32(zero, dstmask);
-		dstmask = _mm256_cmpeq_epi32(dstmask, minusone);
-		dstmask = _mm256_xor_si256(dstmask, minusone);
-
-	}
-	
-	_mm_storeu_si128((_m128i *) &buf[off], dst);
-
-
-	/1* arr_idx = 0;
-	i = 0;
-	for(; i < SIZE * 2; i++) {
-		if (arr_idx >= SIZE || arr[arr_idx] > i) {
-			putchar(')');
-		} else {
-			putchar('(');
-			arr_idx += 1;
-		}
-	}
-	putchar('\n'); *1/
-}
-*/
 
 static void
 print_paren(unsigned int *arr)
 {
 	int i;
 	char c;
+
+	// set all indicies in arr to '(' and others to ')'
+	// '(' is hex 28 and ')' is hex 29
+	// this means that we can just OR with 0x1 to make close paren
 
 	// set all elements of line to close paren
 	// XOR with 0x1 to make open paren (0x28)
@@ -118,29 +43,97 @@ print_paren(unsigned int *arr)
 	off += PSIZE;
 	buf[off++] = '\n';
 
+	// flush buffer if full
 	if (off >= CACHESIZE - (PSIZE + 1)) {
 		write(STDOUT_FILENO, buf, off);
 		off = 0;
 	}
 }
 
+static void
+print_paren_bitmask(uint64_t paren)
+{
+	int i;
+	char c;
+
+	// set all indicies in arr to '(' and others to ')'
+	// '(' is hex 28 and ')' is hex 29
+	// this means that we can just OR with 0x1 to make close paren
+
+	// set all elements of line to close paren
+	// XOR with 0x1 to swap paren open/close
+	memset(&buf[off], 0x28, PSIZE);
+
+	i = 0;
+	for (; i < PSIZE; i++) {
+		buf[off++] |= paren & 1;
+		paren >>= 1;
+	}
+	buf[off++] = '\n';
+
+	// flush buffer if full
+	if (off >= CACHESIZE - (PSIZE + 1)) {
+		write(STDOUT_FILENO, buf, off);
+		off = 0;
+	}
+}
+
+/*
+ * properties:
+ *
+ * swapping adjacent (cpp, opp) -> (opp, cpp) is always valid
+ */
+
+
+/*
+ * general strategy:
+ *
+ * arr stores the position of every open parenthesis.
+ * an open parenthesis (opp) can be moved left, but should never occupy the same
+ * space as another opp. At the end, all opps will be packed left.
+ *
+ * By representing opps as a bitmask, we can XOR the mask with a rshift by one
+ * to get zeros where the next bit is the same
+ */
+
+static uint64_t
+next_paren_bitmask(uint64_t curr)
+{
+	// first set bit
+	const uint64_t first = _tzcnt_u64(curr);
+
+	// number of contig bits grouped with first
+	const uint64_t contig = _tzcnt_u64(~(curr >> first));
+
+	// first unset bit after first group
+	const uint64_t head = first + contig;
+
+	// XOR with curr to move leading bit of group
+	const uint64_t swp = 0b11 << (head - 1);
+
+	// mask of the bits to be reset to starting pos
+	const uint64_t mask = (1 << (head - 1)) - 1;
+
+	const uint64_t orig = 0xAAAAAAAAAAAAAAAA; // 0b1010...
+	return swp ^ (curr & ~mask) | (orig & (mask >> 1));
+}
+
 static bool
 next_paren(unsigned int *arr)
 {
-	size_t i;
+	// Naive implementation:
 
-	i = SIZE - 1;
-	/* yes, not including 0 - always start with open*/
-	for (; i > 0; i--) {
-		arr[i] -= 1;
-
-		if (arr[i] >= i && arr[i] > arr[i - 1])
-			break;
-		if (i == 1) 
-			return false;
-			
-		arr[i] = i * 2;
-	}
+	// i = SIZE - 1;
+	// for (; i > 0; i--) {
+	// 	arr[i] -= 1;
+	//
+	// 	if (arr[i] >= i && arr[i] > arr[i - 1])
+	// 		break;
+	// 	if (i == 1) 
+	// 		return false;
+	// 		
+	// 	arr[i] = i * 2;
+	// }
 
 	return true;
 }
@@ -148,34 +141,12 @@ next_paren(unsigned int *arr)
 int 
 main(void)
 {
-	size_t i;
-	// __m256i mask;
-	// __m256i open, close;
-	// __m256i dst;
+	uint64_t paren;
 
-	// open = _mm256_set1_epi8('(');
-	// close = _mm256_set1_epi8(')');
-	unsigned int arr[SIZE];
+	paren = PMASK & 0xAAAAAAAAAAAAAAAA;
 
-	i = 0;
-	for (; i < SIZE; i++) {
-		arr[i] = i * 2;
-	}
-
-	// mask = 0;
         do {
-		// i = 0;
-		// for(; i < SIZE * 2; i++) {
-			// 
-		// }
-		
-		// i = 0;
-		// for(; i < NPRNTBATCH; i++) {
-			// dst = _mm256_blendv_epi8(close, open, mask);
-			// _mm256_storeu_si256((_m256i *) &buf[off], dst);
-		// }
-
-		print_paren(arr);
-        } while (next_paren(arr));
-	// printf("%lu\n", i);
+		print_paren_bitmask(paren);
+		paren = next_paren_bitmask(paren);
+        } while (paren != FIN);
 }
