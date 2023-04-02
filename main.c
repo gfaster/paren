@@ -45,10 +45,16 @@ print_paren_bitmask(uint64_t paren)
 	memset(cursor, 0x28, PSIZE);
 	init_cur = cursor;
 
-	// TODO: try splitting this up into finer lanes
-	while(!is_aligned(cursor, 8)) {
+	while(!is_aligned(cursor, 4)) {
 		*cursor++ = 0x28 | (paren & 1);
 		paren >>= 1;
+	}
+
+	if(!is_aligned(cursor, 8)) {
+		res = 0x28282828 | _pdep_u32(paren, 0x01010101);
+		*((uint32_t *)cursor) = res;
+		cursor += 4;
+		paren >>= 4;
 	}
 
 	base = 0x2828282828282828;
