@@ -27,6 +27,7 @@
 // upper size of the buffer, actual size will be smaller
 // right now this is as big as it can be
 #define CACHESIZE ((1 << 10) << 10)
+#define BUFSIZE ((1 << 10) << 12)
 
 // number of lines that fit in a pipe - additional byte for LF
 #define PIPECNT ((int) (CACHESIZE) / (PSIZE + 1))
@@ -41,8 +42,8 @@
     (((uintptr_t)(const void *)(ptr)) % (align) == 0)
 
 // TODO: is valloc better here?
-static char buf[CACHESIZE];
-static char bufalt[CACHESIZE];
+static char buf[BUFSIZE];
+static char bufalt[BUFSIZE];
 static char *currbuf = buf;
 static char *cursor = buf;
 
