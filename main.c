@@ -22,7 +22,7 @@
 #define PMASK ((1ULL << PSIZE) - 1)
 
 // End state
-#define FIN (((1ULL << SIZE) - 1) << SIZE)
+#define FIN (((1ULL << SIZE) - 1) << (SIZE))
 
 // upper size of the buffer, actual size will be smaller
 #define CACHESIZE ((1 << 10) << 8)
@@ -157,7 +157,7 @@ flush_buf(int lcnt)
 	ssize_t rem, amt;
 
 	struct iovec iov = {
-		.iov_base = buf,
+		.iov_base = currbuf,
 		.iov_len = 0,
 	};
 
@@ -201,16 +201,20 @@ main(void)
 
 	paren = PMASK & 0xAAAAAAAAAAAAAAAA;
 
+	print_paren_bitmask(paren);
+	i = 1;
         do {
-		i = 0;
 		for (; i < PIPECNT; i++) {
-			print_paren_bitmask(paren);
 			paren = next_paren_bitmask(paren);
+			print_paren_bitmask(paren);
 
 			if (paren == FIN) {
+				i++;
 				break;
 			}
 		}
 		flush_buf(i);
+		i = 0;
         } while (paren != FIN);
+	close(STDOUT_FILENO);
 }
