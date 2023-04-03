@@ -25,7 +25,8 @@
 #define FIN (((1ULL << SIZE) - 1) << (SIZE))
 
 // upper size of the buffer, actual size will be smaller
-#define CACHESIZE ((1 << 10) << 8)
+// right now this is as big as it can be
+#define CACHESIZE ((1 << 10) << 10)
 
 // number of lines that fit in a pipe - additional byte for LF
 #define PIPECNT ((int) (CACHESIZE) / (PSIZE + 1))
