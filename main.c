@@ -47,7 +47,7 @@ static char bufalt[BUFSIZE];
 static char *currbuf = buf;
 static char *cursor = buf;
 
-static void
+static inline void
 print_paren_bitmask(uint64_t paren)
 {
 	int i;
