@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+
 #include <stddef.h>
 #include <stdbool.h>
 #include <immintrin.h>
@@ -11,6 +12,21 @@
 #include <errno.h>
 #include <limits.h>
 #include <unistd.h>
+
+
+#define max(a,b)             \
+({                           \
+    __typeof__ (a) _a = (a); \
+    __typeof__ (b) _b = (b); \
+    _a > _b ? _a : _b;       \
+})
+
+#define min(a,b)             \
+({                           \
+    __typeof__ (a) _a = (a); \
+    __typeof__ (b) _b = (b); \
+    _a < _b ? _a : _b;       \
+})
 
 // number of parenthesis pairs
 #define SIZE 20
@@ -29,21 +45,30 @@
 #define CACHESIZE ((1 << 10) << 10)
 #define BUFSIZE ((1 << 10) << 12)
 
-// number of lines that fit in a pipe - additional byte for LF
-#define PIPECNT ((int) (CACHESIZE) / (PSIZE + 1))
 
 // how many iterations needed to print output in _N bit batches
 #define BATCH_64 (1 + (PSIZE / 8))
 #define BATCH_128 (1 + (PSIZE / 16))
 #define BATCH_256 (1 + (PSIZE / 32))
 
+// SIMD batch size (in bytes) such that AVX2 stores can be used
+// additional byte per line for LF
+// decreasing this to 16 may allow better use of registers
+#define BATCH_SIZE 32
+#define BATCH_STORE ((PSIZE + 1) * BATCH_SIZE)
+
+// number of batches that fit in a pipe
+#define PIPECNT ((int) (CACHESIZE) / (BATCH_256 * 32))
+
 // https://stackoverflow.com/a/1898487
 #define is_aligned(ptr, align) \
     (((uintptr_t)(const void *)(ptr)) % (align) == 0)
 
+// buffers need to be 32-byte alligned because otherwise 
+// _mm256_store_si256 generates a general protection fault
 // TODO: is valloc better here?
-static char buf[BUFSIZE];
-static char bufalt[BUFSIZE];
+static char __attribute__ ((aligned(32))) buf[BUFSIZE];
+static char __attribute__ ((aligned(32))) bufalt[BUFSIZE];
 static char *currbuf = buf;
 static char *cursor = buf;
 
@@ -54,7 +79,10 @@ print_paren_bitmask(uint64_t paren)
 	// size_t off;
 	uint64_t res;
 	char *init_cur;
-	uint64_t base, mask;
+	__m256i resv;
+
+	const uint64_t base = 0x2828282828282828;
+	const uint64_t mask = 0x0101010101010101;
 
 	init_cur = cursor;
 
@@ -63,46 +91,115 @@ print_paren_bitmask(uint64_t paren)
 	// this means that we can just OR with 0x1 to make close paren
 
 	// byte-wise write until 4-byte aligned
-	while(!is_aligned(cursor, 4)) {
-		*cursor++ = 0x28 | (paren & 1);
-		paren >>= 1;
-	}
+	// while(!is_aligned(cursor, 4)) {
+	// 	*cursor++ = 0x28 | (paren & 1);
+	// 	paren >>= 1;
+	// }
+	//
+	// // deposit u32 to get up to 8-byte alignment
+	// if(!is_aligned(cursor, 8)) {
+	// 	res = 0x28282828 | _pdep_u32(paren, 0x01010101);
+	// 	*((uint32_t *)cursor) = res;
+	// 	cursor += 4;
+	// 	paren >>= 4;
+	// }
 
-	// deposit u32 to get up to 8-byte alignment
-	if(!is_aligned(cursor, 8)) {
-		res = 0x28282828 | _pdep_u32(paren, 0x01010101);
-		*((uint32_t *)cursor) = res;
-		cursor += 4;
-		paren >>= 4;
-	}
-
-	base = 0x2828282828282828;
-	mask = 0x0101010101010101;
+	// TODO: is adding the base before or after moving to resv faster?
 	i = 0;
-	for (; i < BATCH_64; i++) {
+	// This loop should ALWAYS be unrolled
+	for (; i < BATCH_256; i++) {
 		// deposit instr writes the contiguous low bits of arg0 in the
 		// pos of each set bit of arg1. Here, I set the lowest bit of
 		// each byte in the u64 to the corresponding bits in the lowest
 		// byte of paren.
 
-		// TODO: is doing SIMD store faster?
-		res = base | _pdep_u64(paren, mask);
-		*((uint64_t *)cursor) = res;
-		cursor += 8;
-		paren >>= 8;
+		// TODO: is combining these instructions faster?
+		if (i * 4 + 0 < BATCH_64) {
+			res = base | _pdep_u64(paren >> 0, mask);
+			resv = _mm256_insert_epi64(resv, res, 0);
+		}
+		if (i * 4 + 1 < BATCH_64) {
+			res = base | _pdep_u64(paren >> 8, mask);
+			resv = _mm256_insert_epi64(resv, res, 1);
+		}
+		if (i * 4 + 2 < BATCH_64) {
+			res = base | _pdep_u64(paren >> 16, mask);
+			resv = _mm256_insert_epi64(resv, res, 2);
+		}
+		if (i * 4 + 3 < BATCH_64) {
+			res = base | _pdep_u64(paren >> 24, mask);
+			resv = _mm256_insert_epi64(resv, res, 3);
+		}
+		if (i == BATCH_256 - 1) {
+			resv = _mm256_insert_epi8(resv, '\n', PSIZE - (i * 32));
+		}
+		// TODO: is doing the extra work to align this faster?
+		_mm256_storeu_si256((__m256i *) cursor, resv);
+		cursor += 32;
 	}
 
 	// set cursor based on initial pos because it probably overshot
-	cursor = init_cur + PSIZE;
-	*cursor++ = '\n';
-
-	// // flush buffer if next iter could overflow it
-	// off = (uintptr_t) cursor - (uintptr_t) buf;
-	// if (off >= CACHESIZE - ((1 + BATCH_64) * 8)) {
-	// 	write(STDOUT_FILENO, buf, off);
-	// 	cursor = buf;
-	// }
+	cursor = init_cur + PSIZE + 1;
+	// *cursor++ = '\n';
 }
+
+// static void
+// print_paren_bitmask_batched(uint64_t *paren)
+// {
+// 	/*
+// 	 * The challenge here is that there is that in general, a line is not
+// 	 * aligned with vector registers, so they can't be used to store the
+// 	 * output. We can solve that by packing paren bitstrings - but now our
+// 	 * advancement code is much harder to manage. It would require, among
+// 	 * other things, carries accross lane boundaries and shifts before
+// 	 * leading zero calculations.
+// 	 *
+// 	 * My first shot at a solution here is combining them after generation.
+// 	 * 
+// 	 *
+// 	 * Check out _mm_alignr instructions
+// 	 *
+// 	 * Whatever solution I settle on should be branchless in the compiled
+// 	 * code - the behavior here should be only dependant on constant values
+// 	 *
+// 	 * THIS DOES NOT WORK YET
+// 	 *
+// 	 * may need to use -ftree-loop-ivcanon and/or -funroll-loops
+// 	 */
+// 	int i, l;
+// 	uint64_t v0, v1, v2, v3;
+// 	unsigned int poff, boff;
+// 	uint32_t bstr; // bitstring that maps to bytes in res
+// 	// __m256i store, newl;
+//
+// 	const uint64_t depmask = 0x1010101010101010;
+// 	const uint64_t base    = 0x2828282828282828;
+//
+// 	i = 0;
+// 	poff = 0;
+// 	for (; i < BATCH_SIZE; i++) {
+// 		newl = _mm256_setzero_si256();
+//
+// 		bstr = 0;
+// 		boff = 0;
+// 		// filling a u32, each bit maps to a byte in res
+// 		// I expect no jumps in this loop
+// 		while (boff > 0) {
+// 			l = min((PSIZE+1) - (poff % (PSIZE+1)), 32 - boff);
+// 			
+// 			bstr |= _bextr_u32(paren[poff / (PSIZE + 1)], 
+// 				   poff % (PSIZE + 1), min(l, PSIZE)) << boff;
+// 			poff += l;
+// 			boff -= l;
+// 		}
+// 		v0 = base | _pdep_u64(bstr >> 0, depmask);
+// 		v1 = base | _pdep_u64(bstr >> 8, depmask);
+// 		v2 = base | _pdep_u64(bstr >> 16, depmask);
+// 		v3 = base | _pdep_u64(bstr >> 24, depmask);
+// 		store = _mm256_set_epi64x(v0, v1, v2, v3);
+// 		_mm256_store_si256((__mm256i *) cursor, store);
+// 	}
+// }
 
 /*
  * properties:
@@ -172,8 +269,8 @@ flush_buf(int lcnt)
 		iov.iov_len = rem;
 		iov.iov_base += amt;
 
-		amt = vmsplice(STDOUT_FILENO, &iov, 1, 0);
-		// amt = write(STDOUT_FILENO, iov.iov_base, iov.iov_len);
+		// amt = vmsplice(STDOUT_FILENO, &iov, 1, 0);
+		amt = write(STDOUT_FILENO, iov.iov_base, iov.iov_len);
 		if (__builtin_expect(amt == -1, 0)) {
 			exit_fail();
 		}
@@ -201,11 +298,11 @@ main(void)
 		exit_fail();
 	}
 
-	paren = PMASK & 0xAAAAAAAAAAAAAAAA;
+	// 9 at the end to initialize into correct place
+	paren = PMASK & 0xAAAAAAAAAAAAAAA9;
 
-	print_paren_bitmask(paren);
-	i = 1;
         do {
+		i = 0;
 		for (; i < PIPECNT; i++) {
 			paren = next_paren_bitmask(paren);
 			print_paren_bitmask(paren);
@@ -216,7 +313,6 @@ main(void)
 			}
 		}
 		flush_buf(i);
-		i = 0;
         } while (paren != FIN);
 	close(STDOUT_FILENO);
 }
