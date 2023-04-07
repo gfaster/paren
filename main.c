@@ -84,6 +84,8 @@ print_paren_bitmask(uint64_t paren)
 	const uint64_t base = 0x2828282828282828;
 	const uint64_t mask = 0x0101010101010101;
 
+	const __m256i basev = _mm256_set1_epi64x(base);
+
 	init_cur = cursor;
 
 	// map all unset bits in paren to '(' and set bits to ')'
@@ -115,24 +117,25 @@ print_paren_bitmask(uint64_t paren)
 
 		// TODO: is combining these instructions faster?
 		if (i * 4 + 0 < BATCH_64) {
-			res = base | _pdep_u64(paren >> 0, mask);
+			res = _pdep_u64(paren >> 0, mask);
 			resv = _mm256_insert_epi64(resv, res, 0);
 		}
 		if (i * 4 + 1 < BATCH_64) {
-			res = base | _pdep_u64(paren >> 8, mask);
+			res = _pdep_u64(paren >> 8, mask);
 			resv = _mm256_insert_epi64(resv, res, 1);
 		}
 		if (i * 4 + 2 < BATCH_64) {
-			res = base | _pdep_u64(paren >> 16, mask);
+			res = _pdep_u64(paren >> 16, mask);
 			resv = _mm256_insert_epi64(resv, res, 2);
 		}
 		if (i * 4 + 3 < BATCH_64) {
-			res = base | _pdep_u64(paren >> 24, mask);
+			res = _pdep_u64(paren >> 24, mask);
 			resv = _mm256_insert_epi64(resv, res, 3);
 		}
 		if (i == BATCH_256 - 1) {
 			resv = _mm256_insert_epi8(resv, '\n', PSIZE - (i * 32));
 		}
+		resv = _mm256_or_si256 (resv, basev);
 		// TODO: is doing the extra work to align this faster?
 		_mm256_storeu_si256((__m256i *) cursor, resv);
 		cursor += 32;
