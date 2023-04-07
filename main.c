@@ -136,6 +136,7 @@ print_paren_bitmask(uint64_t paren)
 		// TODO: is doing the extra work to align this faster?
 		_mm256_storeu_si256((__m256i *) cursor, resv);
 		cursor += 32;
+		paren >>= 32;
 	}
 
 	// set cursor based on initial pos because it probably overshot
