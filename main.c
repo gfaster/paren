@@ -34,6 +34,9 @@
 // number of parenthesis characters in output
 #define PSIZE (SIZE * 2)
 
+// bytes per line - one more fore LF
+#define LSIZE (PSIZE + 1)
+
 // bitmask of parenthesis
 #define PMASK ((1ULL << PSIZE) - 1)
 
@@ -89,10 +92,7 @@ print_paren_bitmask(uint64_t paren)
 					0x0101010101010101,
 					0x0000000000000000);
 	const __m256i andmask = _mm256_set1_epi64x(0x8040201008040201);
-	const __m256i onemask = _mm256_set1_epi8(0x01);
-	const __m256i newl = _mm256_insert_epi8(_mm256_setzero_si256(),
-						'\n' ^ 0x28, 
-						       (PSIZE + 0) % 32);
+
 	init_cur = cursor;
 	i = 0;
 	for (; i < BATCH_256; i++) {
@@ -113,15 +113,15 @@ print_paren_bitmask(uint64_t paren)
 		// I can either do this or testeq 0
 		// TODO: experiment here
 		resv = _mm256_cmpeq_epi8(resv, andmask);
-		resv = _mm256_and_si256(resv, onemask);
+
+		resv = _mm256_sub_epi8(basev, resv);
 
 		if (i == BATCH_256 - 1) {
-			resv = _mm256_or_si256(resv, newl);
+			resv = _mm256_insert_epi8(resv, '\n', PSIZE % 32);
 		}
 
 		// resv = _mm256_xor_si256(resv, onemask);
 
-		resv = _mm256_xor_si256(resv, basev);
 		_mm256_storeu_si256((__m256i *) cursor, resv);
 		cursor += 32;
 		paren >>= 32;
