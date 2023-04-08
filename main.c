@@ -59,7 +59,7 @@
 #define BATCH_STORE ((PSIZE + 1) * BATCH_SIZE)
 
 // number of batches that fit in a pipe
-#define PIPECNT ((int) (CACHESIZE) / (BATCH_256 * 32))
+#define PIPECNT ((int) (CACHESIZE) / (PSIZE + 1))
 
 // https://stackoverflow.com/a/1898487
 #define is_aligned(ptr, align) \
@@ -131,31 +131,6 @@ print_paren_bitmask(uint64_t paren)
 	cursor = init_cur + PSIZE + 1;
 	// *cursor++ = '\n';
 }
-
-// static void
-// print_paren_bitmask_batched(uint64_t paren, __m128i *v, int *idx)
-// {
-	/*
-	 * The challenge here is that there is that in general, a line is not
-	 * aligned with vector registers, so they can't be used to store the
-	 * output. We can solve that by packing paren bitstrings - but now our
-	 * advancement code is much harder to manage. It would require, among
-	 * other things, carries accross lane boundaries and shifts before
-	 * leading zero calculations.
-	 *
-	 * My first shot at a solution here is combining them after generation.
-	 * 
-	 *
-	 * Check out _mm_alignr instructions
-	 *
-	 * Whatever solution I settle on should be branchless in the compiled
-	 * code - the behavior here should be only dependant on constant values
-	 *
-	 * THIS DOES NOT WORK YET
-	 *
-	 * may need to use -ftree-loop-ivcanon and/or -funroll-loops
-	 */
-// }
 
 /*
  * properties:
