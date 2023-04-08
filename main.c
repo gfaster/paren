@@ -47,6 +47,7 @@
 
 
 // how many iterations needed to print output in _N bit batches
+#define BATCH_32 (1 + (PSIZE / 4))
 #define BATCH_64 (1 + (PSIZE / 8))
 #define BATCH_128 (1 + (PSIZE / 16))
 #define BATCH_256 (1 + (PSIZE / 32))
@@ -67,8 +68,8 @@
 // buffers need to be 32-byte alligned because otherwise 
 // _mm256_store_si256 generates a general protection fault
 // TODO: is valloc better here?
-static char __attribute__ ((aligned(32))) buf[BUFSIZE];
-static char __attribute__ ((aligned(32))) bufalt[BUFSIZE];
+static char __attribute__ ((aligned(16))) buf[BUFSIZE];
+static char __attribute__ ((aligned(16))) bufalt[BUFSIZE];
 static char *currbuf = buf;
 static char *cursor = buf;
 
@@ -90,20 +91,6 @@ print_paren_bitmask(uint64_t paren)
 	// map all unset bits in paren to '(' and set bits to ')'
 	// '(' is hex 28 and ')' is hex 29
 	// this means that we can just OR with 0x1 to make close paren
-
-	// byte-wise write until 4-byte aligned
-	// while(!is_aligned(cursor, 4)) {
-	// 	*cursor++ = 0x28 | (paren & 1);
-	// 	paren >>= 1;
-	// }
-	//
-	// // deposit u32 to get up to 8-byte alignment
-	// if(!is_aligned(cursor, 8)) {
-	// 	res = 0x28282828 | _pdep_u32(paren, 0x01010101);
-	// 	*((uint32_t *)cursor) = res;
-	// 	cursor += 4;
-	// 	paren >>= 4;
-	// }
 
 	// TODO: is adding the base before or after moving to resv faster?
 	i = 0;
@@ -134,7 +121,7 @@ print_paren_bitmask(uint64_t paren)
 		if (i == BATCH_256 - 1) {
 			// when it's xor'd again it become 0x0a (\n)
 			resv = _mm256_insert_epi8(resv, '\n' ^ 0x28,
-						  PSIZE - (i * 32));
+					  PSIZE - ((BATCH_256 - 1) * 32));
 		}
 		// TODO: is doing the extra work to align this faster?
 		resv = _mm256_xor_si256(resv, basev);
@@ -148,63 +135,98 @@ print_paren_bitmask(uint64_t paren)
 	// *cursor++ = '\n';
 }
 
-// static void
-// print_paren_bitmask_batched(uint64_t *paren)
-// {
-// 	/*
-// 	 * The challenge here is that there is that in general, a line is not
-// 	 * aligned with vector registers, so they can't be used to store the
-// 	 * output. We can solve that by packing paren bitstrings - but now our
-// 	 * advancement code is much harder to manage. It would require, among
-// 	 * other things, carries accross lane boundaries and shifts before
-// 	 * leading zero calculations.
-// 	 *
-// 	 * My first shot at a solution here is combining them after generation.
-// 	 * 
-// 	 *
-// 	 * Check out _mm_alignr instructions
-// 	 *
-// 	 * Whatever solution I settle on should be branchless in the compiled
-// 	 * code - the behavior here should be only dependant on constant values
-// 	 *
-// 	 * THIS DOES NOT WORK YET
-// 	 *
-// 	 * may need to use -ftree-loop-ivcanon and/or -funroll-loops
-// 	 */
-// 	int i, l;
-// 	uint64_t v0, v1, v2, v3;
-// 	unsigned int poff, boff;
-// 	uint32_t bstr; // bitstring that maps to bytes in res
-// 	// __m256i store, newl;
-//
-// 	const uint64_t depmask = 0x1010101010101010;
-// 	const uint64_t base    = 0x2828282828282828;
-//
-// 	i = 0;
-// 	poff = 0;
-// 	for (; i < BATCH_SIZE; i++) {
-// 		newl = _mm256_setzero_si256();
-//
-// 		bstr = 0;
-// 		boff = 0;
-// 		// filling a u32, each bit maps to a byte in res
-// 		// I expect no jumps in this loop
-// 		while (boff > 0) {
-// 			l = min((PSIZE+1) - (poff % (PSIZE+1)), 32 - boff);
-// 			
-// 			bstr |= _bextr_u32(paren[poff / (PSIZE + 1)], 
-// 				   poff % (PSIZE + 1), min(l, PSIZE)) << boff;
-// 			poff += l;
-// 			boff -= l;
-// 		}
-// 		v0 = base | _pdep_u64(bstr >> 0, depmask);
-// 		v1 = base | _pdep_u64(bstr >> 8, depmask);
-// 		v2 = base | _pdep_u64(bstr >> 16, depmask);
-// 		v3 = base | _pdep_u64(bstr >> 24, depmask);
-// 		store = _mm256_set_epi64x(v0, v1, v2, v3);
-// 		_mm256_store_si256((__mm256i *) cursor, store);
-// 	}
-// }
+static void
+print_paren_bitmask_batched(uint64_t paren, __m128i *v, int *idx)
+{
+	/*
+	 * The challenge here is that there is that in general, a line is not
+	 * aligned with vector registers, so they can't be used to store the
+	 * output. We can solve that by packing paren bitstrings - but now our
+	 * advancement code is much harder to manage. It would require, among
+	 * other things, carries accross lane boundaries and shifts before
+	 * leading zero calculations.
+	 *
+	 * My first shot at a solution here is combining them after generation.
+	 * 
+	 *
+	 * Check out _mm_alignr instructions
+	 *
+	 * Whatever solution I settle on should be branchless in the compiled
+	 * code - the behavior here should be only dependant on constant values
+	 *
+	 * THIS DOES NOT WORK YET
+	 *
+	 * may need to use -ftree-loop-ivcanon and/or -funroll-loops
+	 */
+	#if (PSIZE <= 8)
+	#error "batch store assumes larger than 8"
+	#endif
+
+	int i;
+	uint64_t hi, lo;
+	__m128i vhi, vlo, vlf;
+
+	const uint64_t depmask = 0x1010101010101010;
+	const uint64_t base    = 0x2828282828282828;
+
+	const __m128i basev = _mm_set1_epi64x(base);
+	const __m128i zero128 = _mm_setzero_si128();
+
+	i = 0;
+	for (; i < BATCH_64; i++) {
+		// deposit instr writes the contiguous low bits of arg0 in the
+		// pos of each set bit of arg1. Here, I set the lowest bit of
+		// each byte in the u64 to the corresponding bits in the lowest
+		// byte of paren.
+
+		*idx %= 16;
+
+		lo = _pdep_u64(paren >> (8 * i), depmask);
+		hi = lo;
+		lo <<= 8 * (*idx % 4); 
+		hi >>= 8 * ((*idx + 3) % 4);
+
+		// needed because _mm_insert has a constant index
+		if (*idx / 8 == 0) {
+			// when hi is on the right and it 
+			vhi = _mm_set_epi64x(0, hi);
+			vlo = _mm_set_epi64x(lo, 0);
+		} else if (*idx / 8 == 1) {
+			vhi = _mm_set_epi64x(hi, 0);
+			vlo = _mm_set_epi64x(0, lo);
+		} else {
+			__builtin_unreachable();
+		}
+
+		// set newline
+		if (i == BATCH_64 - 1) {
+			// when it's xor'd again it become 0x0a (\n)
+			// TODO: clean up this
+			vlf = zero128;
+			vlf = _mm_insert_epi8(vlf, '\n' ^ 0x28, 0);
+			vlf = _mm_slli_si128(vlf, 
+			         8 * ((PSIZE - (4 * i) + *idx) % 4));
+		}
+
+		*v = _mm_or_si128(*v, vlo);
+
+		if (*idx / 8 == 1) {
+			// TODO: add another variable to parallelize
+			*v = _mm_or_si128(*v, basev);
+			*v = _mm_xor_si128(*v, vlf);
+			_mm_store_si128((__m128i *) cursor, *v);
+			*v = zero128;
+			cursor += 16;
+		} 
+
+		*v = _mm_or_si128(*v, vhi);
+
+		paren >>= 8;
+		*idx += min(4, 1 + PSIZE - (4 * i));
+	}
+	// newline was added
+	*idx += 1;
+}
 
 /*
  * properties:
@@ -297,11 +319,15 @@ int
 main(void)
 {
 	uint64_t paren;
+	__m128i v;
+	int idx;
 	int i;
 
 	if (fcntl(STDOUT_FILENO, F_SETPIPE_SZ, CACHESIZE) != CACHESIZE) {
 		exit_fail();
 	}
+
+	idx = 0;
 
 	// 9 at the end to initialize into correct place
 	paren = PMASK & 0xAAAAAAAAAAAAAAA9;
@@ -310,7 +336,7 @@ main(void)
 		i = 0;
 		for (; i < PIPECNT; i++) {
 			paren = next_paren_bitmask(paren);
-			print_paren_bitmask(paren);
+			print_paren_bitmask_batched(paren, &v, &idx);
 
 			if (paren == FIN) {
 				i++;
