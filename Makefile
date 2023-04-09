@@ -6,7 +6,7 @@ validate: validate.c
 	gcc -O3 -march=native validate.c -o validate -Wall -Wextra
 
 tspeed: paren
-	timeout 15 ./paren | pv -ra > /dev/null
+	timeout 15 taskset 1 ./paren | taskset 2 pv -ra > /dev/null
 
 tvalid: validate paren
 	./paren | ./validate
