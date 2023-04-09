@@ -50,19 +50,19 @@
 
 
 // how many iterations needed to print output in _N bit batches
-#define BATCH_32 (1 + (PSIZE / 4))
-#define BATCH_64 (1 + (PSIZE / 8))
-#define BATCH_128 (1 + (PSIZE / 16))
-#define BATCH_256 (1 + (PSIZE / 32))
+#define BATCH_32 (1 + (LSIZE / 4))
+#define BATCH_64 (1 + (LSIZE / 8))
+#define BATCH_128 (1 + (LSIZE / 16))
+#define BATCH_256 (1 + (LSIZE / 32))
 
 // SIMD batch size (in bytes) such that AVX2 stores can be used
 // additional byte per line for LF
 // decreasing this to 16 may allow better use of registers
 #define BATCH_SIZE 32
-#define BATCH_STORE ((PSIZE + 1) * BATCH_SIZE)
+#define BATCH_STORE (LSIZE * BATCH_SIZE)
 
 // number of batches that fit in a pipe
-#define PIPECNT ((int) (CACHESIZE) / (PSIZE + 1))
+#define PIPECNT ((int) (CACHESIZE) / LSIZE)
 
 // https://stackoverflow.com/a/1898487
 #define is_aligned(ptr, align) \
@@ -76,12 +76,14 @@ static char __attribute__ ((aligned(16))) bufalt[BUFSIZE];
 static char *currbuf = buf;
 static char *cursor = buf;
 
+/*
+ * each set bit in paren represents a close parenthesis.
+ * To print, each bit is sent it its own byte and added to 0x28
+ */
 static inline void
 print_paren_bitmask(uint64_t paren)
 {
 	int i;
-	// size_t off;
-	// uint64_t res;
 	char *init_cur;
 	__m256i resv;
 
@@ -110,17 +112,16 @@ print_paren_bitmask(uint64_t paren)
 		// only let the correct bit be set
 		resv = _mm256_and_si256(resv, andmask);
 
-		// I can either do this or testeq 0
-		// TODO: experiment here
+		// set all nonzero bytes to -1
+		// reuse andmask because it's a superset of resv
 		resv = _mm256_cmpeq_epi8(resv, andmask);
 
+		// subtracting -1 gets close paren
 		resv = _mm256_sub_epi8(basev, resv);
 
 		if (i == BATCH_256 - 1) {
 			resv = _mm256_insert_epi8(resv, '\n', PSIZE % 32);
 		}
-
-		// resv = _mm256_xor_si256(resv, onemask);
 
 		_mm256_storeu_si256((__m256i *) cursor, resv);
 		cursor += 32;
@@ -128,8 +129,7 @@ print_paren_bitmask(uint64_t paren)
 	}
 
 	// set cursor based on initial pos because it probably overshot
-	cursor = init_cur + PSIZE + 1;
-	// *cursor++ = '\n';
+	cursor = init_cur + LSIZE;
 }
 
 /*
@@ -193,7 +193,7 @@ flush_buf(int lcnt)
 
 
 	// using vmsplice to reduce write(2) overhead
-	rem = lcnt * (PSIZE + 1);
+	rem = lcnt * LSIZE;
 	amt = 0;
 	do {
 		rem -= amt;
@@ -237,7 +237,7 @@ main(void)
 			paren = next_paren_bitmask(paren);
 			print_paren_bitmask(paren);
 
-			if (paren == FIN) {
+			if (__builtin_expect(paren == FIN, 0)) {
 				i++;
 				break;
 			}

@@ -1,5 +1,6 @@
 paren: main.c
-	gcc -O3 -march=native main.c -o paren -Wall -Wextra
+	gcc -O3 -march=native -fwhole-program  \
+		main.c -o paren -Wall -Wextra
 
 validate: validate.c
 	gcc -O3 -march=native validate.c -o validate -Wall -Wextra
@@ -12,5 +13,6 @@ tvalid: validate paren
 
 clean:
 	rm -f ./paren
+	rm -f ./validate
 
 
