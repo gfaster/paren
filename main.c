@@ -190,16 +190,21 @@ next_paren_bitmask(uint64_t curr)
 	// number of contig bits grouped with first
 	const uint64_t contig = _tzcnt_u64(~(curr >> first));
 
+	// carry forward
+	const uint64_t add = curr + (1 << first);
+
 	// original bit positions
 	const uint64_t orig = 0xAAAAAAAAAAAAAAAA; // 0b1010...
 
 	// the bits that are to be reset deposited to their original positions
 	// Both methods here seem to have identical speed. The bextr operation
 	// itself is slower but the reduced setup makes up for it
-	const uint64_t rst = _pdep_u64((1 << (contig - 1)) - 1, orig);
+	// const uint64_t rst = _pdep_u64((1 << (contig - 1)) - 1, orig);
 	// const uint64_t rst = _bextr_u64(orig, 0, contig * 2 - 2);
+	const uint64_t rst = orig & ((1 << (contig * 2 - 1)) - 1);
 
-	return (curr + (1 << first)) | rst;
+
+	return add | rst;
 }
 
 static void 
@@ -247,7 +252,7 @@ do_batch(uint64_t paren)
 		// also try _mm256_lddqu_si256
 		bcv = _mm256_load_si256((__m256i *)&bytecode[bcidx]);
 		bcidx += BATCH_SIZE;
-		if (bcidx == BATCH_SIZE) {
+		if (bcidx == BATCH_STORE) {
 			bcidx = 0;
 		}
 
