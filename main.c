@@ -90,12 +90,31 @@
 // #define ERROR(msg) err(1, "%s", msg)
 #endif
 
-// buffers need to be 32-byte alligned because otherwise 
+// io buffers need to be 32-byte alligned because otherwise 
 // _mm256_store_si256 generates a general protection fault
 // TODO: is valloc better here?
 static char __attribute__ ((aligned(BUFALIGN))) buf[DUAL_BUFSIZE];
 static char *currbuf = buf;
 static char *cursor = buf;
+
+// bytecode here is just doing as much pre-computation as possible. All the hot
+// loop needs to do is distribute bits to low pos, then add with bytecode
+static char __attribute__ ((aligned(32))) bytecode[BATCH_BYTES];
+
+__attribute__((cold)) static void
+gen_bytecode(void)
+{
+	int i;
+
+	i = 0;
+	for (; i < BATCH_BYTES; i++) {
+		if ((i + 1) % LSIZE == 0) {
+			bytecode[i] = '\n';
+		} else {
+			bytecode[i] = 0x28;
+		}
+	}
+}
 
 __attribute__((cold, noreturn)) static void 
 exit_fail(void) 
@@ -190,13 +209,11 @@ do_batch(uint64_t paren)
 	#endif
 
 	int i;
-	// uint32_t off, head;
+	uint64_t bcidx;
 	int64_t poff, voff;
-	__m256i newl, resv;
+	__m256i resv, bcv;
 	uint32_t curr;
 
-	const __m256i basev = _mm256_set1_epi8(0x28);
-	const __m256i newlmask = _mm256_set1_epi8('\n' ^ 0x28);
 	const __m256i shufmask = _mm256_set_epi64x(
 					0x0303030303030303,
 					0x0202020202020202,
@@ -207,6 +224,7 @@ do_batch(uint64_t paren)
 	poff = 0;
 	voff = PSIZE;
 	i = 0;
+	bcidx = 0;
 	while(paren != FIN) {
 		curr = paren >> poff;
 
@@ -215,19 +233,18 @@ do_batch(uint64_t paren)
 			paren = next_paren_bitmask(paren);
 			curr |= paren << (voff + 1); // breaks down at PS = 64
 			poff = 32 - (voff + 1);
-
-			// set newline byte - is there a better way?
-			newl = _mm256_set1_epi32(1ul << (voff - 0));
-			newl = _mm256_shuffle_epi8(newl, shufmask);
-			newl = _mm256_cmpeq_epi8(newl, andmask);
-			newl = _mm256_and_si256(newl, newlmask);
 		} else {
-			newl = _mm256_setzero_si256();
 			poff += 32;
 		}
 		
 		voff = PSIZE - poff; // voff idx of LF
 
+		// also try _mm256_lddqu_si256
+		bcv = _mm256_load_si256((__m256i *)&bytecode[bcidx]);
+		bcidx += BATCH_SIZE;
+		if (bcidx == BATCH_SIZE) {
+			bcidx = 0;
+		}
 
 		// trying to find a 256-bit deposit equivallent
 		// if we move each byte of the 32-bit paren to the qword it
@@ -247,11 +264,9 @@ do_batch(uint64_t paren)
 		// reuse andmask because it's a superset of resv
 		resv = _mm256_cmpeq_epi8(resv, andmask);
 
-		// subtracting -1 gets close paren
-		resv = _mm256_sub_epi8(basev, resv);
+		// combine with bytecode
+		resv = _mm256_sub_epi8(bcv, resv);
 
-		// add newl byte
-		resv = _mm256_xor_si256(resv, newl);
 
 		_mm256_store_si256((__m256i *) cursor, resv);
 		cursor += 32;
@@ -289,6 +304,8 @@ _start(void)
 		ERROR("Pipe could not be resized");
 	}
 	#endif
+
+	gen_bytecode();
 
 	// 9 at the end to initialize into correct place
 	// (removed for batching)
