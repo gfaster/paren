@@ -14,7 +14,10 @@ tspeed: paren
 	timeout 15 taskset 1 ./paren | taskset 2 pv -ra > /dev/null
 
 tperf: paren
-	perf stat timeout 15 taskset 1 ./paren | taskset 2 pv -q > /dev/null
+	perf stat -e branches -e branch-misses -e cache-misses -e cache-references \
+	-e cycles -e alignment-faults -e major-faults -e minor-faults \
+	-e dTLB-loads -e dTLB-load-misses -e dTLB-stores -e dTLB-store-misses\
+		timeout 15 taskset 1 ./paren | taskset 2 pv -q > /dev/null
 
 tvalid: validate paren
 	./paren | ./validate

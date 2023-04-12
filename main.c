@@ -51,6 +51,10 @@
 #define DUAL_BUFSIZE (2 * BUFSIZE)
 #define BUFALIGN (1 << 22)
 
+// I am consistantly surprised at how big it's practical for the cache size to
+// be. Doing tperf tests as of v6.0 with 1<<19 (512kiB) gives cache miss rate of
+// 0.009% but 1<<20 (1MiB) has only 0.011% cache misses. It's not enough to make
+// the smaller cache faster (actually it's slower by ~100MiB)
 #define CACHESIZE (1l << 20)
 
 // how many iterations needed to print output in _N bit batches
@@ -225,20 +229,21 @@ do_batch(uint64_t paren)
 	voff = PSIZE;
 	i = 0;
 	bcidx = 0;
-	while(paren != FIN) {
+	do {
 		curr = paren >> poff;
 
 		if (voff < 32) {
-			// what if voff == 0?
 			paren = next_paren_bitmask(paren);
 			curr |= paren << (voff + 1); // breaks down at PS = 64
 			poff = 32 - (voff + 1);
 		} else {
+			// extracting this out is not faster (for now)
 			poff += 32;
 		}
 		
 		voff = PSIZE - poff; // voff idx of LF
 
+		// load bytecode
 		// also try _mm256_lddqu_si256
 		bcv = _mm256_load_si256((__m256i *)&bytecode[bcidx]);
 		bcidx += BATCH_SIZE;
@@ -271,17 +276,22 @@ do_batch(uint64_t paren)
 		_mm256_store_si256((__m256i *) cursor, resv);
 		cursor += 32;
 
-		// printf("%lx, %i\n", paren, i);
 		i += 1;
 
 		// for whatever reason, transfers are done 128 bytes less
 		// than expected (check with strace)
-		if (i >= PIPECNT - 4) {
+		//
+		// for whatever reason, keeping the `paren == FIN` decreases
+		// brach mispredictions by ~3%. Combined with removing the
+		// post-loop flush, it decreases by 95%. Only doing the latter
+		// brings no benefit. Why? let me grab my grimoire so I can
+		// consult the Great Old Ones for answers.
+		if (i >= PIPECNT - 4 || paren == FIN) {
 			flush_buf((i) * BATCH_SIZE);
 			i = 0;
 		}
-	}
-	flush_buf((i) * BATCH_BYTES);
+	} while(paren != FIN);
+	// flush_buf((i) * BATCH_BYTES);
 }
 
 
