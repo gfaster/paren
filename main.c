@@ -64,6 +64,7 @@
 #define BATCH_STORE (LSIZE * BATCH_SIZE)
 
 // number of bytes in a batch
+// At size=20, batch_size=32 this is 41984
 #define BATCH_BYTES (BATCH_STORE * BATCH_SIZE)
 
 // lines in a batch
@@ -71,8 +72,8 @@
 
 #define CACHESIZE (1l << 20)
 
-// number of batches that fit in a pipe
-#define PIPECNT (CACHESIZE / BATCH_BYTES)
+// number of batch writes that fit in a pipe
+#define PIPECNT (CACHESIZE / BATCH_SIZE)
 
 
 // https://stackoverflow.com/a/1898487
@@ -82,8 +83,8 @@
 #ifdef DEBUG
 #define ERROR(msg) err(1, "%s", msg)
 #else 
-// #define ERROR(msg) exit_fail()
-#define ERROR(msg) err(1, "%s", msg)
+#define ERROR(msg) exit_fail()
+// #define ERROR(msg) err(1, "%s", msg)
 #endif
 
 // buffers need to be 32-byte alligned because otherwise 
@@ -94,60 +95,49 @@ static char __attribute__ ((aligned(32))) bufalt[BUFSIZE];
 static char *currbuf = buf;
 static char *cursor = buf;
 
-/*
- * each set bit in paren represents a close parenthesis.
- * To print, each bit is sent it its own byte and added to 0x28
- */
-static inline void
-print_paren_bitmask(uint64_t paren)
+__attribute__((cold, noreturn)) static void 
+exit_fail(void) 
 {
-	int i;
-	char *init_cur;
-	__m256i resv;
+	err(1, "error: %i", errno);
+}
 
-	const __m256i basev = _mm256_set1_epi8(0x28);
-	const __m256i shufmask = _mm256_set_epi64x(
-					0x0303030303030303,
-					0x0202020202020202,
-					0x0101010101010101,
-					0x0000000000000000);
-	const __m256i andmask = _mm256_set1_epi64x(0x8040201008040201);
+static void
+flush_buf(size_t bcnt) 
+{
+	ssize_t rem, amt;
 
-	init_cur = cursor;
-	i = 0;
-	for (; i < BATCH_256; i++) {
-		// trying to find a 256-bit deposit equivallent
-		// if we move each byte of the 32-bit paren to the qword it
-		// belongs to, we can just AND it with that bit set
+	struct iovec iov = {
+		.iov_base = currbuf,
+		.iov_len = 0,
+	};
 
-		// only need the low 32 bits of each lane set, but this is fine
-		resv = _mm256_set1_epi32(paren);
 
-		// move the byte of paren that has the bit in the corresponding
-		// position in the vector to that position.
-		resv = _mm256_shuffle_epi8(resv, shufmask);
+	// using vmsplice to reduce write(2) overhead
+	rem = bcnt;
+	amt = 0;
+	do {
+		rem -= amt;
+		iov.iov_len = rem;
+		iov.iov_base += amt;
 
-		// only let the correct bit be set
-		resv = _mm256_and_si256(resv, andmask);
-
-		// set all nonzero bytes to -1
-		// reuse andmask because it's a superset of resv
-		resv = _mm256_cmpeq_epi8(resv, andmask);
-
-		// subtracting -1 gets close paren
-		resv = _mm256_sub_epi8(basev, resv);
-
-		if (i == BATCH_256 - 1) {
-			resv = _mm256_insert_epi8(resv, '\n', PSIZE % 32);
+		#ifndef DEBUG
+			amt = vmsplice(STDOUT_FILENO, &iov, 1, 0);
+		#else
+			amt = write(STDOUT_FILENO, iov.iov_base, iov.iov_len);
+		#endif
+		if (__builtin_expect(amt == -1, 0)) {
+			ERROR("writing error");
 		}
+	} while (rem > 0);
 
-		_mm256_storeu_si256((__m256i *) cursor, resv);
-		cursor += 32;
-		paren >>= 32;
+	// swap out other buffer
+	// we do this to be sure the previous pipe is drained
+	if (currbuf == buf) {
+		currbuf = bufalt;
+	} else {
+		currbuf = buf;
 	}
-
-	// set cursor based on initial pos because it probably overshot
-	cursor = init_cur + LSIZE;
+	cursor = currbuf;
 }
 
 /*
@@ -192,7 +182,7 @@ next_paren_bitmask(uint64_t curr)
 	return (curr + (1 << first)) | rst;
 }
 
-static uint64_t 
+static void 
 do_batch(uint64_t paren)
 {
 	/*
@@ -220,7 +210,7 @@ do_batch(uint64_t paren)
 	poff = 0;
 	voff = PSIZE;
 	i = 0;
-	for (; i < BATCH_STORE; i++) {
+	while(paren != FIN) {
 		curr = paren >> poff;
 
 		if (voff < 32) {
@@ -269,61 +259,24 @@ do_batch(uint64_t paren)
 
 		_mm256_store_si256((__m256i *) cursor, resv);
 		cursor += 32;
-	}
-	return next_paren_bitmask(paren);
-}
 
-__attribute__((cold, noreturn)) static void 
-exit_fail(void) 
-{
-	err(1, "error: %i", errno);
-}
+		// printf("%lx, %i\n", paren, i);
+		i += 1;
 
-static void
-flush_buf(size_t bcnt) 
-{
-	ssize_t rem, amt;
-
-	struct iovec iov = {
-		.iov_base = currbuf,
-		.iov_len = 0,
-	};
-
-
-	// using vmsplice to reduce write(2) overhead
-	rem = bcnt;
-	amt = 0;
-	do {
-		rem -= amt;
-		iov.iov_len = rem;
-		iov.iov_base += amt;
-
-		#ifndef DEBUG
-		amt = vmsplice(STDOUT_FILENO, &iov, 1, 0);
-		#else
-		amt = write(STDOUT_FILENO, iov.iov_base, iov.iov_len);
-		#endif
-		if (__builtin_expect(amt == -1, 0)) {
-			ERROR("writing error");
+		if (i >= PIPECNT) {
+			flush_buf((i) * BATCH_SIZE);
+			i = 0;
 		}
-	} while (rem > 0);
-
-	// swap out other buffer
-	// we do this to be sure the previous pipe is drained
-	if (currbuf == buf) {
-		currbuf = bufalt;
-	} else {
-		currbuf = buf;
 	}
-	cursor = currbuf;
+	flush_buf((i) * BATCH_BYTES);
 }
+
 
 
 int 
 main(void)
 {
 	uint64_t paren;
-	int i;
 
 	if ( !is_aligned(buf, 32) || !is_aligned(bufalt, 32) ) {
 		ERROR("buf or bufalt is not aligned");
@@ -335,23 +288,9 @@ main(void)
 	}
 	#endif
 
-
 	// 9 at the end to initialize into correct place
 	// (removed for batching)
 	paren = PMASK & 0xAAAAAAAAAAAAAAAA;
-        do {
-		i = 0;
-		for (; i < PIPECNT; i++) {
-			// paren = next_paren_bitmask(paren);
-			// print_paren_bitmask(paren);
-			paren = do_batch(paren);
-			if (__builtin_expect(paren == FIN, 0)) {
-				i++;
-				break;
-			}
-		}
-		flush_buf((i) * BATCH_BYTES);
-
-        } while (paren != FIN);
+	do_batch(paren);
 	close(STDOUT_FILENO);
 }
