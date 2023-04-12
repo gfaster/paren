@@ -13,6 +13,7 @@
 #include <err.h>
 #include <limits.h>
 #include <unistd.h>
+#include <sys/mman.h>
 
 
 #define max(a,b)             \
@@ -47,9 +48,10 @@
 // upper size of the buffer, actual size will be smaller
 // right now this is as big as it can be
 #define BUFSIZE ((1 << 10) << 12)
+#define DUAL_BUFSIZE (2 * BUFSIZE)
+#define BUFALIGN (1 << 22)
 
-#define BUFALIGN (1 << 21)
-
+#define CACHESIZE (1l << 20)
 
 // how many iterations needed to print output in _N bit batches
 #define BATCH_32 (1 + (LSIZE / 4))
@@ -72,7 +74,6 @@
 // lines in a batch
 #define BATCH_LINES (BATCH_BYTES / LSIZE)
 
-#define CACHESIZE (1l << 20)
 
 // number of batch writes that fit in a pipe
 #define PIPECNT (CACHESIZE / BATCH_SIZE)
@@ -92,8 +93,7 @@
 // buffers need to be 32-byte alligned because otherwise 
 // _mm256_store_si256 generates a general protection fault
 // TODO: is valloc better here?
-static char __attribute__ ((aligned(BUFALIGN))) buf[2 * BUFSIZE];
-static char __attribute__ ((aligned(BUFALIGN))) bufalt[BUFSIZE];
+static char __attribute__ ((aligned(BUFALIGN))) buf[DUAL_BUFSIZE];
 static char *currbuf = buf;
 static char *cursor = buf;
 
@@ -134,12 +134,7 @@ flush_buf(size_t bcnt)
 
 	// swap out other buffer
 	// we do this to be sure the previous pipe is drained
-	if (currbuf == buf) {
-		currbuf = bufalt;
-	} else {
-		currbuf = buf;
-	}
-	cursor = currbuf;
+	cursor = buf + ((currbuf - buf) ^ BUFSIZE);
 }
 
 /*
@@ -281,8 +276,12 @@ _start(void)
 {
 	uint64_t paren;
 
-	if ( !is_aligned(buf, BUFALIGN) || !is_aligned(bufalt, BUFALIGN) ) {
-		ERROR("buf or bufalt is not aligned");
+	if ( !is_aligned(buf, BUFALIGN)) {
+		ERROR("buf is not aligned");
+	}
+
+	if (madvise(buf, DUAL_BUFSIZE, MADV_HUGEPAGE) == -1) {
+		ERROR("huge page fail");
 	}
 
 	#ifndef DEBUG
