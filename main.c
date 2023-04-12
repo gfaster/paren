@@ -48,6 +48,8 @@
 // right now this is as big as it can be
 #define BUFSIZE ((1 << 10) << 12)
 
+#define BUFALIGN (1 << 21)
+
 
 // how many iterations needed to print output in _N bit batches
 #define BATCH_32 (1 + (LSIZE / 4))
@@ -90,8 +92,8 @@
 // buffers need to be 32-byte alligned because otherwise 
 // _mm256_store_si256 generates a general protection fault
 // TODO: is valloc better here?
-static char __attribute__ ((aligned(32))) buf[BUFSIZE];
-static char __attribute__ ((aligned(32))) bufalt[BUFSIZE];
+static char __attribute__ ((aligned(BUFALIGN))) buf[2 * BUFSIZE];
+static char __attribute__ ((aligned(BUFALIGN))) bufalt[BUFSIZE];
 static char *currbuf = buf;
 static char *cursor = buf;
 
@@ -222,7 +224,6 @@ do_batch(uint64_t paren)
 			// set newline byte - is there a better way?
 			newl = _mm256_set1_epi32(1ul << (voff - 0));
 			newl = _mm256_shuffle_epi8(newl, shufmask);
-			newl = _mm256_and_si256(newl, andmask); // maybe rm?
 			newl = _mm256_cmpeq_epi8(newl, andmask);
 			newl = _mm256_and_si256(newl, newlmask);
 		} else {
@@ -263,7 +264,9 @@ do_batch(uint64_t paren)
 		// printf("%lx, %i\n", paren, i);
 		i += 1;
 
-		if (i >= PIPECNT) {
+		// for whatever reason, transfers are done 128 bytes less
+		// than expected (check with strace)
+		if (i >= PIPECNT - 4) {
 			flush_buf((i) * BATCH_SIZE);
 			i = 0;
 		}
@@ -273,12 +276,12 @@ do_batch(uint64_t paren)
 
 
 
-int 
-main(void)
+void 
+_start(void)
 {
 	uint64_t paren;
 
-	if ( !is_aligned(buf, 32) || !is_aligned(bufalt, 32) ) {
+	if ( !is_aligned(buf, BUFALIGN) || !is_aligned(bufalt, BUFALIGN) ) {
 		ERROR("buf or bufalt is not aligned");
 	}
 
@@ -293,4 +296,5 @@ main(void)
 	paren = PMASK & 0xAAAAAAAAAAAAAAAA;
 	do_batch(paren);
 	close(STDOUT_FILENO);
+	exit(0);
 }

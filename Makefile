@@ -1,6 +1,7 @@
 paren: main.c
-	gcc -O3 -march=native -fwhole-program  \
-		main.c -o paren -Wall -Wextra
+	gcc -O3 -march=native \
+		main.c -c -o paren.o -Wall -Wextra
+	ld -I /lib64/ld-linux-x86-64.so.2 paren.o -o paren -lc
 
 validate: validate.c
 	gcc -O3 -march=native validate.c -o validate -Wall -Wextra
