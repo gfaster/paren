@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <immintrin.h>
+#include <x86intrin.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdint.h>
@@ -68,7 +69,20 @@
 // this is the size of the SIMD REGISTER
 #define BATCH_SIZE 32
 
+#if (LSIZE < 32)
+#error "need code for shorter lines"
+#endif
+#if ((LSIZE / 2) * 2 == LSIZE)
+#error "LSIZE should be odd how tf did this happen"
+#endif
+
 // number of store operations in a batch
+// we need to make sure BATCH_SIZE has no cycles within a batch
+// (LSIZE*n % BATCH_SIZE = is not zero between n=0 and n=BATCH_LINES, exclusive)
+// this is because batched calculations rely on a single batch store having at
+// most two lines a part of it
+// Luckily, since LSIZE is odd and BATCH_SIZE is a power of 2, they're always
+// relatively prime, so their LCM is LSIZE * BATCH_SIZE
 #define BATCH_STORE (LSIZE * BATCH_SIZE)
 
 // number of bytes in a batch
@@ -94,6 +108,8 @@
 // #define ERROR(msg) err(1, "%s", msg)
 #endif
 
+#define unlikely(x) __builtin_expect((x), 0)
+
 // io buffers need to be 32-byte alligned because otherwise 
 // _mm256_store_si256 generates a general protection fault
 // TODO: is valloc better here?
@@ -105,15 +121,30 @@ static char *cursor = buf;
 // loop needs to do is distribute bits to low pos, then add with bytecode
 static char __attribute__ ((aligned(32))) bytecode[BATCH_BYTES];
 
+
+#if (PSIZE < 32)
+#error "bytecode and batch cannot handle smaller than 32"
+#endif
+
 __attribute__((cold)) static void
-gen_bytecode(void)
+gen_bytecode(uint64_t paren)
 {
+	// If I can make sure that two ints always have what I need, maybe
+	// barrel shifted, I can have a bytecode permute. That would work even
+	// if I can't get it perfect with the alignment - the shift can take
+	// care of that for me
+
 	int i;
 
 	i = 0;
 	for (; i < BATCH_BYTES; i++) {
 		if ((i + 1) % LSIZE == 0) {
 			bytecode[i] = '\n';
+		} else if ((i + 0) % LSIZE >= 32) {
+			// the upper bits are changed less often, so we can
+			// precompute one for a few tens of thousands of lines
+			// bytecode[i] = 0x28 + ((paren >> ((i % LSIZE) - 32)) & 0x1);
+			bytecode[i] = '0';
 		} else {
 			bytecode[i] = 0x28;
 		}
@@ -150,7 +181,7 @@ flush_buf(size_t bcnt)
 		#else
 			amt = write(STDOUT_FILENO, iov.iov_base, iov.iov_len);
 		#endif
-		if (__builtin_expect(amt == -1, 0)) {
+		if (unlikely(amt == -1)) {
 			ERROR("writing error");
 		}
 	} while (rem > 0);
@@ -203,8 +234,14 @@ next_paren_bitmask(uint64_t curr)
 	// const uint64_t rst = _bextr_u64(orig, 0, contig * 2 - 2);
 	const uint64_t rst = orig & ((1 << (contig * 2 - 1)) - 1);
 
+	const uint64_t ret = add | rst;
 
-	return add | rst;
+	// need new bytcode if change in upper dword
+	if (unlikely((0xFFFFFFFF00000000 & add) > curr)) {
+		gen_bytecode(ret);
+	}
+
+	return ret;
 }
 
 static void 
@@ -213,15 +250,13 @@ do_batch(uint64_t paren)
 	/*
 	 * I have two options here - I can store or recalculate offsets
 	 */
-	#if (PSIZE < 32)
-	#error "batch is for lines longer than 32"
-	#endif
 
 	int i;
 	uint64_t bcidx;
-	int64_t poff, voff;
+	uint64_t next;
+	int64_t voff;
 	__m256i resv, bcv;
-	uint32_t curr;
+	uint64_t curr;
 
 	const __m256i shufmask = _mm256_set_epi64x(
 					0x0303030303030303,
@@ -230,23 +265,22 @@ do_batch(uint64_t paren)
 					0x0000000000000000);
 	const __m256i andmask = _mm256_set1_epi64x(0x8040201008040201);
 
-	poff = 0;
-	voff = PSIZE;
 	i = 0;
 	bcidx = 0;
+	voff = 0;
+	next = 0;
 	do {
-		curr = paren >> poff;
-
-		if (voff < 32) {
-			paren = next_paren_bitmask(paren);
-			curr |= paren << (voff + 1); // breaks down at PS = 64
-			poff = 32 - (voff + 1);
-		} else {
-			// extracting this out is not faster (for now)
-			poff += 32;
-		}
+		curr = paren >> voff;
 		
-		voff = PSIZE - poff; // voff idx of LF
+		// lSIZE?
+		voff = (voff + (LSIZE - BATCH_SIZE)) & (BATCH_SIZE - 1);
+
+		paren = next_paren_bitmask(paren);
+		pshft = __rolq((uint32_t)paren, voff);
+		// pshft = ((uint64_t)((uint32_t)paren)) << (poff);
+
+		// low should def be the first thing after new gen
+		curr |= (uint32_t)(pshft);
 
 		// load bytecode
 		// also try _mm256_lddqu_si256
@@ -290,7 +324,7 @@ do_batch(uint64_t paren)
 		// brach mispredictions by ~3%. Combined with removing the
 		// post-loop flush, it decreases by 95%. Only doing the latter
 		// brings no benefit. Why? let me grab my grimoire so I can
-		// consult the Great Old Ones for answers.
+		// summon the Great Old Ones in search of answers.
 		if (i >= PIPECNT - 4 || paren == FIN) {
 			flush_buf((i) * BATCH_SIZE);
 			i = 0;
@@ -320,11 +354,11 @@ _start(void)
 	}
 	#endif
 
-	gen_bytecode();
 
 	// 9 at the end to initialize into correct place
 	// (removed for batching)
 	paren = PMASK & 0xAAAAAAAAAAAAAAAA;
+	gen_bytecode(paren);
 	do_batch(paren);
 	close(STDOUT_FILENO);
 	exit(0);
