@@ -1,0 +1,117 @@
+_start.cold() /home/gfaster/projects/leetcode/paren/paren
+Event: cycles
+
+Percent        
+               
+               
+             Disassembly of section .text:
+               
+             00000000004010c8 <_start.cold>:
+             _start.cold():
+             → callq        gen_bytecode.constprop.0
+               xor          %r11d,%r11d
+               xor          %r12d,%r12d
+               mov          $0x28,%r15d
+               movabs       $0xaaaaaaaaaa,%r8
+               xor          %r9d,%r9d
+               lea          0x10(%rsp),%r14
+               lea          buf,%r13
+  0.00   2a:   shrx         %r9,%r8,%r10
+               mov          %r10d,%eax
+  1.41         cmp          $0x1f,%r15
+  1.56       ↓ jg           17b
+  4.25         xor          %esi,%esi
+  0.00         tzcnt        %r8,%rsi
+  0.00         shrx         %rsi,%r8,%rdi
+  1.42         not          %rdi
+  4.23         tzcnt        %rdi,%rdi
+  0.00         mov          $0x1,%eax
+  0.04         lea          -0x1(%rdi,%rdi,1),%ebx
+  1.48         shlx         %ebx,%eax,%ebx
+  4.23         dec          %ebx
+  0.00         shlx         %esi,%eax,%esi
+  0.04         movslq       %ebx,%rbx
+  1.44         movabs       $0xaaaaaaaaaaaaaaaa,%rax
+  4.27         and          %rax,%rbx
+  0.00         movslq       %esi,%rsi
+               mov          $0xffffffff,%eax
+  1.44         add          %r8,%rsi
+  4.23         shl          $0x20,%rax
+  0.00         or           %rsi,%rbx
+  0.00         and          %rax,%rsi
+               cmp          %r8,%rsi
+  1.43       ↓ jbe          94
+             → callq        gen_bytecode.constprop.0
+  4.20   94:   lea          0x1(%r15),%eax
+  0.00         mov          $0x1f,%r9d
+  0.00         shlx         %rax,%rbx,%rax
+  1.40         sub          %r15,%r9
+  4.19         or           %r10d,%eax
+  0.00         mov          %rbx,%r8
+  0.00   ac:   mov          $0x28,%r10d
+  1.45         lea          bytecode,%rcx
+  4.24         vmovdqa      (%rcx,%r12,1),%ymm1
+  1.57         sub          %r9,%r10
+  0.00         add          $0x20,%r12
+  1.43         mov          %r10,%r15
+  0.16         cmp          $0x520,%r12
+  4.11       ↓ jne          d5
+               xor          %r12d,%r12d
+  1.54   d5:   vmovd        %eax,%xmm0
+  0.41         vpbroadcastd %xmm0,%ymm0
+  5.82         vpshufb      0xe71(%rip),%ymm0,%ymm0        # 402020 <_start+0xd70>
+  7.51         vpand        0xe89(%rip),%ymm0,%ymm0        # 402040 <_start+0xd90>
+  0.00         mov          cursor,%rbx
+  5.73         vpcmpeqb     0xe7a(%rip),%ymm0,%ymm0        # 402040 <_start+0xd90>
+  1.55         add          $0x20,%rbx
+  1.40         mov          currbuf,%rax
+  2.29         vpsubb       %ymm0,%ymm1,%ymm0
+  2.00         vmovdqa      %ymm0,-0x20(%rbx)
+  1.55         mov          %rbx,cursor
+  1.36         cmp          $0x7fff,%r11d
+             ↓ jg           130
+  2.28         mov          $0xfffff,%ecx
+  2.01         shl          $0x14,%rcx
+  0.00         cmp          %rcx,%r8
+  1.57       ↓ jne          184
+  0.00  130:   mov          %rax,0x10(%rsp)
+  0.00         sub          %rax,%rbx
+  0.00         xor          %eax,%eax
+  0.00         vzeroupper     
+  0.00  13d:   sub          %rax,%rbx
+  0.00         xor          %ecx,%ecx
+               mov          $0x1,%edx
+  0.00         mov          %r14,%rsi
+               mov          $0x1,%edi
+  0.00         add          %rax,0x10(%rsp)
+  0.00         mov          %r8,(%rsp)
+  0.00         mov          %r9,0x8(%rsp)
+  0.00         mov          %rbx,0x18(%rsp)
+  0.00       → callq        vmsplice@plt
+  0.01         cmp          $0xffffffffffffffff,%rax
+  0.00         mov          0x8(%rsp),%r9
+               mov          (%rsp),%r8
+             ↓ jne          18c
+             → callq        exit_fail
+  0.00  17b:   add          $0x20,%r9
+  1.57       ↑ jmpq         ac
+  1.39  184:   inc          %r11d
+  5.80       ↑ jmpq         2a
+        18c:   test         %rbx,%rbx
+  0.00       ↑ jg           13d
+  0.00         mov          currbuf,%rax
+  0.00         sub          %r13,%rax
+  0.00         xor          $0x400000,%rax
+  0.00         add          %r13,%rax
+  0.00         mov          %rax,cursor
+  0.00         mov          %rax,currbuf
+               mov          $0xfffff,%eax
+  0.00         shl          $0x14,%rax
+               cmp          %rax,%r8
+             ↓ je           1cb
+  0.00         mov          $0x1,%r11d
+             ↑ jmpq         2a
+        1cb:   mov          $0x1,%edi
+             → callq        close@plt
+               xor          %edi,%edi
+             → callq        exit@plt

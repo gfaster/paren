@@ -29,12 +29,14 @@ vector and write that to the buffer. The buffer is one of two, and uses
 (supposed to be) fully consumed before it is overwritten.
 
 ### Performance
-I haven't had fully valid output for quite some time, but my best somewhat
-correct output was version 5.2 at 7.39 GiB/s and the best fully correct output
-was 5.1 at 7.37 GiB/s. Tests were run with SIZE=20 on my Debian 11 Thinkpad P1
-Gen 3 with an i7-10750H.
+The current commit runs at 7.37GiB/s of valid output. I'm not sure the best way
+to improve further, but a performance annotation is in the
+[perf.txt](./perf.txt) file. Tests and benchmarks were run with SIZE=20 on my
+Debian 11 Thinkpad P1 Gen 3 with an i7-10750H.
 
 ### Known Bottlenecks
-I ran perf on it and it seems like the broadcast and shuffle instructions
-account for ~30% of the total runtime, but I'm not quite sure if there would be
-a better way.
+The whole main loop doesn't have any obvious bottlenecks. Notably, I/O and
+function calls are almost definitely not the bottleneck - according to `perf`,
+<3% of run time was spent on flushing and swapping the buffer. The remaining is
+split almost evenly between generating the next set and storing it in the
+buffer.
