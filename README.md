@@ -18,7 +18,7 @@ further will likely recieve corrupted output (For example, `./paren | pv |
 Alternatively, run using `make`:
 - `make tpseed` does a 15 second speed test.
 - `make tvalid` does validation testing.
-- `make tperf` does performance profiling.
+- `make tperf` does a 5-minute performance profile.
 
 ### Method
 I calculate the next permutation as a 64-bit unsigned integer (least-significant

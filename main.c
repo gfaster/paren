@@ -51,12 +51,13 @@
 #define BUFSIZE ((1 << 10) << 12)
 #define DUAL_BUFSIZE (2 * BUFSIZE)
 #define BUFALIGN (1 << 22)
+#define BUFSPLIT (BUFALIGN >> 1)
 
 // I am consistantly surprised at how big it's practical for the cache size to
 // be. Doing tperf tests as of v6.0 with 1<<19 (512kiB) gives cache miss rate of
 // 0.009% but 1<<20 (1MiB) has only 0.011% cache misses. It's not enough to make
 // the smaller cache faster (actually it's slower by ~100MiB)
-#define CACHESIZE (1l << 20)
+#define CACHESIZE (1l << 19)
 
 // how many iterations needed to print output in _N bit batches
 #define BATCH_32 (1 + (LSIZE / 4))
@@ -189,21 +190,15 @@ flush_buf(size_t bcnt)
 
 	// swap out other buffer
 	// we do this to be sure the previous pipe is drained
-	cursor = buf + ((currbuf - buf) ^ BUFSIZE);
+	cursor = buf + ((currbuf - buf) ^ BUFSPLIT);
 	currbuf = cursor;
 }
-
-/*
- * properties:
- *
- * swapping adjacent (clp, opp) -> (opp, clp) is always valid
- */
 
 
 /*
  * general strategy:
  *
- * curr is a bitmask of all the close parentheses (clp) with LSb the start of
+ * curr is a bitmask of all the close parentheses with LSb the start of
  * the output string. 
  *
  * We find the rightmost contiguous bit, and reset all but the MSb of the
@@ -212,8 +207,30 @@ flush_buf(size_t bcnt)
  *
  * This is optimized by adding a 1 that's shifted to start of group, which is
  * effectively a swap and clear simultaniously
+ *
+ * Here's a simple example of the function in action, remember the least
+ * significant bit is the rightmost in the output:
+ *
+ * curr = 1010111000 = ((()))()()
+ *
+ *               1010111000
+ * first = 3           ^---
+ *
+ *               1010111000
+ * contig = 3        ^^^
+ *
+ *               1010111000
+ * add:        +       1000
+ *             = 1011000000 = (((((())()
+ *
+ * move contig - 1 = 2 bits back to their original positions
+ *
+ * rst:        = 0000001010 = ()()((((((
+ *
+ * return add + rst
+ *             = 1011001010 = ()()(())()
+ *
  */
-
 inline static uint64_t
 next_paren_bitmask(uint64_t curr)
 {
@@ -273,7 +290,7 @@ do_batch(uint64_t paren)
 	voff = PSIZE;
 	i = 0;
 	bcidx = 0;
-	while(paren != FIN) {
+	do {
 		curr = paren >> poff;
 
 		if (voff < 32) {
@@ -338,6 +355,93 @@ do_batch(uint64_t paren)
 	// flush_buf((i) * BATCH_BYTES);
 }
 
+static void
+flat_store_bytecode(uint64_t paren)
+{
+	/* 
+	 * this is a super minimal experiment of how fast I could expect to get
+	 * in a single-threaded context. I run the "same" loop as the full
+	 * output.
+	 *
+	 * This function gets 16GiB/s 
+	 */
+
+	int i;
+	uint64_t bcidx;
+	__m256i resv, bcv; 
+
+	const __m256i batch = _mm256_set1_epi64x(0xFF00FF00FF00FF00);
+
+	i = 0;
+	bcidx = 0;
+	while(true) {
+		bcv = _mm256_load_si256((__m256i *)&bytecode[bcidx]);
+		bcidx += BATCH_SIZE;
+		if (bcidx == BATCH_STORE) {
+			bcidx = 0;
+		}
+
+		// combine with bytecode
+		resv = _mm256_sub_epi8(bcv, batch);
+
+		_mm256_store_si256((__m256i *) cursor, resv);
+		cursor += 32;
+
+		if (i >= PIPECNT || paren == FIN) {
+			// flush_buf((i) * BATCH_SIZE);
+			flush_buf(cursor - currbuf);
+			i = 0;
+		}
+		i += 1;
+	};
+}
+
+static void
+flat_store(uint64_t paren)
+{
+	/* 
+	 * this is a super minimal experiment of how fast I could expect to get
+	 * in a single-threaded context. This function is just stores
+	 *
+	 * This function gets 26.7 GiB/s 
+	 */
+
+	int i;
+	char *lc;
+	const __m256i batch = _mm256_set1_epi64x(0xFF00FF00FF00FF00);
+
+	i = 0;
+	lc = currbuf;
+	while(true) {
+		_mm256_store_si256((__m256i *) lc, batch);
+		lc += 32;
+
+		if (i >= PIPECNT) {
+			// flush_buf((i) * BATCH_SIZE);
+			flush_buf(lc - currbuf);
+			lc = currbuf;
+			i = 0;
+		}
+		i += 1;
+	};
+}
+
+static void
+flat_flush_buf(uint64_t paren)
+{
+	/* 
+	 * this is a super minimal experiment of how fast I could expect to get
+	 * in a single-threaded context. This function is just the speed of
+	 * flush_buf
+	 *
+	 * This function gets 72.8 GiB/s 
+	 */
+
+	memset(buf, 0xFF, DUAL_BUFSIZE);
+	while(true) {
+		flush_buf(CACHESIZE);
+	};
+}
 
 
 void 
@@ -364,7 +468,10 @@ _start(void)
 	// (removed for batching)
 	paren = PMASK & 0xAAAAAAAAAAAAAAAA;
 	gen_bytecode(paren);
-	do_batch(paren);
+	// do_batch(paren);
+	// flat_store_bytecode(paren);
+	flat_store(paren);
+	// flat_flush_buf(paren);
 	close(STDOUT_FILENO);
 	exit(0);
 }
