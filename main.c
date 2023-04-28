@@ -85,7 +85,7 @@
 // relatively prime, so their LCM is LSIZE * BATCH_SIZE
 #define BATCH_STORE (LSIZE * BATCH_SIZE)
 
-// number of bytes in a batch
+// number of bytes in a series of vector stores such that LF is at the end
 // At size=20, batch_size=32 this is 41984
 #define BATCH_BYTES (BATCH_STORE * BATCH_SIZE)
 
@@ -94,7 +94,7 @@
 
 
 // number of batch writes that fit in a pipe
-#define PIPECNT (CACHESIZE / BATCH_SIZE)
+#define PIPECNT ((CACHESIZE / BATCH_SIZE))
 
 
 // https://stackoverflow.com/a/1898487
@@ -144,7 +144,8 @@ gen_bytecode(uint64_t paren)
 			// the upper bits are changed less often, so we can
 			// precompute one for a few tens of thousands of lines
 			// bytecode[i] = 0x28 + ((paren >> ((i % LSIZE) - 32)) & 0x1);
-			bytecode[i] = '0';
+			// bytecode[i] = '0';
+			bytecode[i] = 0x28;
 		} else {
 			bytecode[i] = 0x28;
 		}
@@ -189,6 +190,7 @@ flush_buf(size_t bcnt)
 	// swap out other buffer
 	// we do this to be sure the previous pipe is drained
 	cursor = buf + ((currbuf - buf) ^ BUFSIZE);
+	currbuf = cursor;
 }
 
 /*
@@ -250,13 +252,15 @@ do_batch(uint64_t paren)
 	/*
 	 * I have two options here - I can store or recalculate offsets
 	 */
+	#if (PSIZE < 32)
+	#error "batch is for lines longer than 32"
+	#endif
 
 	int i;
 	uint64_t bcidx;
-	uint64_t next;
-	int64_t voff;
+	int64_t poff, voff;
 	__m256i resv, bcv;
-	uint64_t curr;
+	uint32_t curr;
 
 	const __m256i shufmask = _mm256_set_epi64x(
 					0x0303030303030303,
@@ -265,24 +269,24 @@ do_batch(uint64_t paren)
 					0x0000000000000000);
 	const __m256i andmask = _mm256_set1_epi64x(0x8040201008040201);
 
+	poff = 0;
+	voff = PSIZE;
 	i = 0;
 	bcidx = 0;
-	voff = 0;
-	next = 0;
-	do {
-		curr = paren >> voff;
+	while(paren != FIN) {
+		curr = paren >> poff;
+
+		if (voff < 32) {
+			// what if voff == 0?
+			paren = next_paren_bitmask(paren);
+			curr |= paren << (voff + 1); // breaks down at PS = 64
+			poff = 32 - (voff + 1);
+		} else {
+			poff += 32;
+		}
 		
-		// lSIZE?
-		voff = (voff + (LSIZE - BATCH_SIZE)) & (BATCH_SIZE - 1);
+		voff = PSIZE - poff; // voff idx of LF
 
-		paren = next_paren_bitmask(paren);
-		pshft = __rolq((uint32_t)paren, voff);
-		// pshft = ((uint64_t)((uint32_t)paren)) << (poff);
-
-		// low should def be the first thing after new gen
-		curr |= (uint32_t)(pshft);
-
-		// load bytecode
 		// also try _mm256_lddqu_si256
 		bcv = _mm256_load_si256((__m256i *)&bytecode[bcidx]);
 		bcidx += BATCH_SIZE;
@@ -315,7 +319,6 @@ do_batch(uint64_t paren)
 		_mm256_store_si256((__m256i *) cursor, resv);
 		cursor += 32;
 
-		i += 1;
 
 		// for whatever reason, transfers are done 128 bytes less
 		// than expected (check with strace)
@@ -325,10 +328,12 @@ do_batch(uint64_t paren)
 		// post-loop flush, it decreases by 95%. Only doing the latter
 		// brings no benefit. Why? let me grab my grimoire so I can
 		// summon the Great Old Ones in search of answers.
-		if (i >= PIPECNT - 4 || paren == FIN) {
-			flush_buf((i) * BATCH_SIZE);
+		if (i >= PIPECNT || paren == FIN) {
+			// flush_buf((i) * BATCH_SIZE);
+			flush_buf(cursor - currbuf);
 			i = 0;
 		}
+		i += 1;
 	} while(paren != FIN);
 	// flush_buf((i) * BATCH_BYTES);
 }
@@ -363,3 +368,7 @@ _start(void)
 	close(STDOUT_FILENO);
 	exit(0);
 }
+
+/*
+vim:tw=80
+*/
