@@ -156,7 +156,8 @@ gen_bytecode(uint64_t paren)
 __attribute__((cold, noreturn)) static void 
 exit_fail(void) 
 {
-	err(1, "error: %i", errno);
+	dprintf(STDERR_FILENO, "error occured.\n");
+	exit(2);
 }
 
 static void
@@ -251,7 +252,8 @@ next_paren_bitmask(uint64_t curr)
 	// itself is slower but the reduced setup makes up for it
 	// const uint64_t rst = _pdep_u64((1 << (contig - 1)) - 1, orig);
 	// const uint64_t rst = _bextr_u64(orig, 0, contig * 2 - 2);
-	const uint64_t rst = orig & ((1 << (contig * 2 - 1)) - 1);
+	// const uint64_t rst = orig & ((1 << (contig * 2 - 1)) - 1);
+	const uint64_t rst = orig & ((1 << ((contig << 1) - 1)) - 1);
 
 	const uint64_t ret = add | rst;
 
@@ -266,9 +268,6 @@ next_paren_bitmask(uint64_t curr)
 static void 
 do_batch(uint64_t paren)
 {
-	/*
-	 * I have two options here - I can store or recalculate offsets
-	 */
 	#if (PSIZE < 32)
 	#error "batch is for lines longer than 32"
 	#endif
@@ -477,5 +476,5 @@ _start(void)
 }
 
 /*
-vim:tw=80
+vim: tw=80 sw=8
 */
