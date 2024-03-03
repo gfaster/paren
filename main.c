@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 
+#define NO_PRINT
 
 #define max(a,b)             \
 ({                           \
@@ -48,7 +49,7 @@
 
 // upper size of the buffer, actual size will be smaller
 // right now this is as big as it can be
-#define BUFSIZE ((1 << 10) << 12)
+#define BUFSIZE ((1 << 10) << 11)
 #define DUAL_BUFSIZE (2 * BUFSIZE)
 #define BUFALIGN (1 << 22)
 #define BUFSPLIT (BUFALIGN >> 1)
@@ -57,45 +58,50 @@
 // be. Doing tperf tests as of v6.0 with 1<<19 (512kiB) gives cache miss rate of
 // 0.009% but 1<<20 (1MiB) has only 0.011% cache misses. It's not enough to make
 // the smaller cache faster (actually it's slower by ~100MiB)
-#define CACHESIZE (1l << 19)
-
-// how many iterations needed to print output in _N bit batches
-#define BATCH_32 (1 + (LSIZE / 4))
-#define BATCH_64 (1 + (LSIZE / 8))
-#define BATCH_128 (1 + (LSIZE / 16))
-#define BATCH_256 (1 + (LSIZE / 32))
+//
+// My L2 cache is 256 kiB per CPU and my L3 is 12 MiB
+#define CACHESIZE (1l << 18)
 
 // SIMD batch size (in bytes) such that AVX2 stores can be used
 // additional byte per line for LF
 // this is the size of the SIMD REGISTER
-#define BATCH_SIZE 32
+#define SIMD_BYTES 32
 
 #if (LSIZE < 32)
 #error "need code for shorter lines"
 #endif
-#if ((LSIZE / 2) * 2 == LSIZE)
+#if ((LSIZE & 1) == 0)
 #error "LSIZE should be odd how tf did this happen"
 #endif
 
 // number of store operations in a batch
-// we need to make sure BATCH_SIZE has no cycles within a batch
-// (LSIZE*n % BATCH_SIZE = is not zero between n=0 and n=BATCH_LINES, exclusive)
-// this is because batched calculations rely on a single batch store having at
-// most two lines a part of it
-// Luckily, since LSIZE is odd and BATCH_SIZE is a power of 2, they're always
-// relatively prime, so their LCM is LSIZE * BATCH_SIZE
-#define BATCH_STORE (LSIZE * BATCH_SIZE)
+#define BATCH_STORE (LSIZE)
+
+#if SIZE < 16 || SIZE >= 32
+#error "unsupported size"
+#endif
+
+/* 
+ * pairs and their cycles ( ()()()() -> (((()))) would be 4 pairs)
+ * 6 pairs - period 132
+ * 5 pairs - period 42
+ * 4 pairs - period 14
+ * 3 pairs - period 5
+ * 2 pairs - period 2
+ */
+
 
 // number of bytes in a series of vector stores such that LF is at the end
-// At size=20, batch_size=32 this is 41984
-#define BATCH_BYTES (BATCH_STORE * BATCH_SIZE)
+// Since BATCH_STORE is odd and SIMD_BYTES a power of 2, the lcm is their
+// product
+#define BATCH_BYTES (BATCH_STORE * SIMD_BYTES)
 
 // lines in a batch
 #define BATCH_LINES (BATCH_BYTES / LSIZE)
 
 
 // number of batch writes that fit in a pipe
-#define PIPECNT ((CACHESIZE / BATCH_SIZE))
+#define PIPECNT ((CACHESIZE / SIMD_BYTES))
 
 
 // https://stackoverflow.com/a/1898487
@@ -115,8 +121,6 @@
 // _mm256_store_si256 generates a general protection fault
 // TODO: is valloc better here?
 static char __attribute__ ((aligned(BUFALIGN))) buf[DUAL_BUFSIZE];
-static char *currbuf = buf;
-static char *cursor = buf;
 
 // bytecode here is just doing as much pre-computation as possible. All the hot
 // loop needs to do is distribute bits to low pos, then add with bytecode
@@ -126,6 +130,41 @@ static char __attribute__ ((aligned(32))) bytecode[BATCH_BYTES];
 #if (PSIZE < 32)
 #error "bytecode and batch cannot handle smaller than 32"
 #endif
+
+static void
+print_bits(uint64_t bits)
+{
+	char arr[65];
+	for (int i = 0; i < 64; i++) {
+		arr[i] = ((bits >> i) & 1) + '0';
+	}
+	arr[64] = '\0';
+	puts(arr);
+}
+
+static void
+mm256_print_bytes(__m256i bytes)
+{
+	unsigned char arr[32];
+	_mm256_storeu_si256((__m256i *)arr, bytes);
+	printf("[");
+	for (int i = 0; i < 32; i++) {
+		printf("%2x ", (int)arr[i]);
+	}
+	printf("]\n");
+}
+
+static void
+mm_print_bytes(__m128i bytes)
+{
+	unsigned char arr[16];
+	_mm_storeu_si128((__m128i *)arr, bytes);
+	printf("[");
+	for (int i = 0; i < 16; i++) {
+		printf("%2x ", (int)arr[i]);
+	}
+	printf("]\n");
+}
 
 __attribute__((cold)) static void
 gen_bytecode(uint64_t paren)
@@ -144,9 +183,9 @@ gen_bytecode(uint64_t paren)
 		} else if ((i + 0) % LSIZE >= 32) {
 			// the upper bits are changed less often, so we can
 			// precompute one for a few tens of thousands of lines
-			// bytecode[i] = 0x28 + ((paren >> ((i % LSIZE) - 32)) & 0x1);
+			bytecode[i] = 0x28 + ((paren >> (i % LSIZE)) & 0x1);
 			// bytecode[i] = '0';
-			bytecode[i] = 0x28;
+			// bytecode[i] = 0x28;
 		} else {
 			bytecode[i] = 0x28;
 		}
@@ -160,9 +199,13 @@ exit_fail(void)
 	exit(2);
 }
 
-static void
-flush_buf(size_t bcnt) 
+static char *
+flush_buf(size_t bcnt, char *currbuf)
 {
+	#ifdef NO_PRINT
+	return buf + ((currbuf - buf) ^ BUFSPLIT);
+	#endif
+
 	ssize_t rem, amt;
 
 	struct iovec iov = {
@@ -191,8 +234,7 @@ flush_buf(size_t bcnt)
 
 	// swap out other buffer
 	// we do this to be sure the previous pipe is drained
-	cursor = buf + ((currbuf - buf) ^ BUFSPLIT);
-	currbuf = cursor;
+	return buf + ((currbuf - buf) ^ BUFSPLIT);
 }
 
 
@@ -232,9 +274,11 @@ flush_buf(size_t bcnt)
  *             = 1011001010 = ()()(())()
  *
  */
-inline static uint64_t
+static uint64_t
 next_paren_bitmask(uint64_t curr)
 {
+	print_bits(curr);
+
 	// first set bit
 	const uint64_t first = _tzcnt_u64(curr);
 
@@ -274,9 +318,10 @@ do_batch(uint64_t paren)
 
 	int i;
 	uint64_t bcidx;
-	int64_t poff, voff;
+	int64_t voff;
 	__m256i resv, bcv;
-	uint32_t curr;
+	uint64_t curr;
+	char *cursor, *currbuf;
 
 	const __m256i shufmask = _mm256_set_epi64x(
 					0x0303030303030303,
@@ -285,32 +330,32 @@ do_batch(uint64_t paren)
 					0x0000000000000000);
 	const __m256i andmask = _mm256_set1_epi64x(0x8040201008040201);
 
-	poff = 0;
-	voff = PSIZE;
+	cursor = buf;
+	currbuf = buf;
+
+	voff = LSIZE;
 	i = 0;
 	bcidx = 0;
+	curr = paren;
 	do {
-		curr = paren >> poff;
+		// curr = paren >> poff;
 
 		if (voff < 32) {
-			// what if voff == 0?
 			paren = next_paren_bitmask(paren);
-			curr |= paren << (voff + 1); // breaks down at PS = 64
-			poff = 32 - (voff + 1);
-		} else {
-			poff += 32;
+			curr |= ((uint64_t)(uint32_t)paren) << voff;
+			voff += LSIZE;
 		}
-		
-		voff = PSIZE - poff; // voff idx of LF
+		voff -= 32;
+		// print_bits(curr);
 
 		// also try _mm256_lddqu_si256
 		bcv = _mm256_load_si256((__m256i *)&bytecode[bcidx]);
-		bcidx += BATCH_SIZE;
-		if (bcidx == BATCH_STORE) {
+		bcidx += SIMD_BYTES;
+		if (bcidx == BATCH_BYTES) {
 			bcidx = 0;
 		}
 
-		// trying to find a 256-bit deposit equivallent
+		// trying to find a 256-bit deposit equivalent
 		// if we move each byte of the 32-bit paren to the qword it
 		// belongs to, we can just AND it with that bit set
 
@@ -335,6 +380,8 @@ do_batch(uint64_t paren)
 		_mm256_store_si256((__m256i *) cursor, resv);
 		cursor += 32;
 
+		curr >>= 32;
+
 
 		// for whatever reason, transfers are done 128 bytes less
 		// than expected (check with strace)
@@ -345,8 +392,9 @@ do_batch(uint64_t paren)
 		// brings no benefit. Why? let me grab my grimoire so I can
 		// summon the Great Old Ones in search of answers.
 		if (i >= PIPECNT || paren == FIN) {
-			// flush_buf((i) * BATCH_SIZE);
-			flush_buf(cursor - currbuf);
+			// flush_buf((i) * SIMD_BYTES);
+			currbuf = flush_buf(cursor - currbuf, currbuf);
+			cursor = currbuf;
 			i = 0;
 		}
 		i += 1;
@@ -355,56 +403,18 @@ do_batch(uint64_t paren)
 }
 
 static void
-flat_store_bytecode(uint64_t paren)
-{
-	/* 
-	 * this is a super minimal experiment of how fast I could expect to get
-	 * in a single-threaded context. I run the "same" loop as the full
-	 * output.
-	 *
-	 * This function gets 16GiB/s 
-	 */
-
-	int i;
-	uint64_t bcidx;
-	__m256i resv, bcv; 
-
-	const __m256i batch = _mm256_set1_epi64x(0xFF00FF00FF00FF00);
-
-	i = 0;
-	bcidx = 0;
-	while(true) {
-		bcv = _mm256_load_si256((__m256i *)&bytecode[bcidx]);
-		bcidx += BATCH_SIZE;
-		if (bcidx == BATCH_STORE) {
-			bcidx = 0;
-		}
-
-		// combine with bytecode
-		resv = _mm256_sub_epi8(bcv, batch);
-
-		_mm256_store_si256((__m256i *) cursor, resv);
-		cursor += 32;
-
-		if (i >= PIPECNT || paren == FIN) {
-			// flush_buf((i) * BATCH_SIZE);
-			flush_buf(cursor - currbuf);
-			i = 0;
-		}
-		i += 1;
-	};
-}
-
-static void
 flat_store(uint64_t paren)
 {
+	(void)paren;
 	/* 
 	 * this is a super minimal experiment of how fast I could expect to get
 	 * in a single-threaded context. This function is just stores
 	 *
 	 * This function gets 26.7 GiB/s 
+	 * Jumps to 38 GiB/s with 128kb CACHESIZE
 	 */
 
+	/*
 	int i;
 	char *lc;
 	const __m256i batch = _mm256_set1_epi64x(0xFF00FF00FF00FF00);
@@ -416,18 +426,20 @@ flat_store(uint64_t paren)
 		lc += 32;
 
 		if (i >= PIPECNT) {
-			// flush_buf((i) * BATCH_SIZE);
+			// flush_buf((i) * SIMD_BYTES);
 			flush_buf(lc - currbuf);
 			lc = currbuf;
 			i = 0;
 		}
 		i += 1;
 	};
+	*/
 }
 
 static void
 flat_flush_buf(uint64_t paren)
 {
+	(void)paren;
 	/* 
 	 * this is a super minimal experiment of how fast I could expect to get
 	 * in a single-threaded context. This function is just the speed of
@@ -436,10 +448,12 @@ flat_flush_buf(uint64_t paren)
 	 * This function gets 72.8 GiB/s 
 	 */
 
+	/*
 	memset(buf, 0xFF, DUAL_BUFSIZE);
 	while(true) {
 		flush_buf(CACHESIZE);
 	};
+	*/
 }
 
 
@@ -467,9 +481,9 @@ _start(void)
 	// (removed for batching)
 	paren = PMASK & 0xAAAAAAAAAAAAAAAA;
 	gen_bytecode(paren);
-	// do_batch(paren);
+	do_batch(paren);
 	// flat_store_bytecode(paren);
-	flat_store(paren);
+	// flat_store(paren);
 	// flat_flush_buf(paren);
 	close(STDOUT_FILENO);
 	exit(0);
