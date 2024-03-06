@@ -13,7 +13,7 @@ debug: main.c
 	ld -I /lib64/ld-linux-x86-64.so.2 paren.o -o paren -lc
 
 tspeed: paren
-	timeout 15 taskset 1 ./paren | taskset 2 pv -ra > /dev/null
+	timeout 15 taskset 1 ./paren | taskset 2 pv -ra -B 192K > /dev/null
 
 tperfstat: paren
 	perf stat -e branches -e branch-misses -e cache-misses \

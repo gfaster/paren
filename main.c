@@ -16,7 +16,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 
-#define NO_PRINT
+// #define NO_PRINT
 
 #define max(a,b)             \
 ({                           \
@@ -277,7 +277,7 @@ flush_buf(size_t bcnt, char *currbuf)
 static uint64_t
 next_paren_bitmask(uint64_t curr)
 {
-	print_bits(curr);
+	// print_bits(curr);
 
 	// first set bit
 	const uint64_t first = _tzcnt_u64(curr);
@@ -302,6 +302,8 @@ next_paren_bitmask(uint64_t curr)
 	const uint64_t ret = add | rst;
 
 	// need new bytcode if change in upper dword
+	// This is currently incorrect, we need to do keep the bytecode
+	// consistent across split acesses
 	if (unlikely((0xFFFFFFFF00000000 & add) > curr)) {
 		gen_bytecode(ret);
 	}
@@ -317,6 +319,7 @@ do_batch(uint64_t paren)
 	#endif
 
 	int i;
+	uint64_t old_paren;
 	uint64_t bcidx;
 	int64_t voff;
 	__m256i resv, bcv;
@@ -336,7 +339,8 @@ do_batch(uint64_t paren)
 	voff = LSIZE;
 	i = 0;
 	bcidx = 0;
-	curr = paren;
+	old_paren = paren;
+	curr = (uint64_t)(uint32_t)paren;
 	do {
 		// curr = paren >> poff;
 
