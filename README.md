@@ -18,7 +18,8 @@ further will likely recieve corrupted output (For example, `./paren | pv |
 Alternatively, run using `make`:
 - `make tpseed` does a 15 second speed test.
 - `make tvalid` does validation testing.
-- `make tperf` does a 5-minute performance profile.
+- `make tperf` does a performance profile.
+- `make tperfstat` runs `perf stat`
 
 ### Method
 I calculate the next permutation as a 64-bit unsigned integer (least-significant
@@ -29,14 +30,6 @@ vector and write that to the buffer. The buffer is one of two, and uses
 (supposed to be) fully consumed before it is overwritten.
 
 ### Performance
-The current commit runs at 7.37GiB/s of valid output. I'm not sure the best way
-to improve further, but a performance annotation is in the
-[perf.txt](./perf.txt) file. Tests and benchmarks were run with SIZE=20 on my
-Debian 11 Thinkpad P1 Gen 3 with an i7-10750H.
 
-### Known Bottlenecks
-The whole main loop doesn't have any obvious bottlenecks. Notably, I/O and
-function calls are almost definitely not the bottleneck - according to `perf`,
-<3% of run time was spent on flushing and swapping the buffer. The remaining is
-split almost evenly between generating the next set and storing it in the
-buffer.
+The current commit runs at 11.3GiB/s of valid output. Tests and benchmarks
+were run with SIZE=20 on my Linux 6.1.0 Thinkpad P1 Gen 3 with an i7-10750H.
