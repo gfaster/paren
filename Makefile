@@ -2,7 +2,7 @@ CFLAGS=-Wall -Wextra -march=native -Wno-unused-function -fno-strict-aliasing
 OPTFLAGS=-ffat-lto-objects -flto -mtune=native
 
 paren: main.c
-	gcc -O3 $(CFLAGS) $(OPTFLAGS) main.c -c -o paren.o
+	gcc -g -O3 $(CFLAGS) $(OPTFLAGS) main.c -c -o paren.o
 	ld -flto -I /lib64/ld-linux-x86-64.so.2 paren.o -o paren -lc
 
 validate: validate.c
@@ -13,7 +13,7 @@ debug: main.c
 	ld -I /lib64/ld-linux-x86-64.so.2 paren.o -o paren -lc
 
 tspeed: paren
-	timeout 15 taskset 1 ./paren | taskset 2 pv -ra -B 192K > /dev/null
+	timeout 15 taskset 1 ./paren | taskset 2 pv -ra -B 256K > /dev/null
 
 tperfstat: paren
 	perf stat -e branches -e branch-misses -e cache-misses \

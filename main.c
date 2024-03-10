@@ -119,7 +119,6 @@
 
 // io buffers need to be 32-byte alligned because otherwise 
 // _mm256_store_si256 generates a general protection fault
-// TODO: is valloc better here?
 static char __attribute__ ((aligned(BUFALIGN))) buf[DUAL_BUFSIZE];
 
 // bytecode here is just doing as much pre-computation as possible. All the hot
@@ -277,27 +276,30 @@ flush_buf(size_t bcnt, char *currbuf)
 static uint64_t
 next_paren_bitmask(uint64_t curr)
 {
-	// print_bits(curr);
-
 	// first set bit
 	const uint64_t first = _tzcnt_u64(curr);
 
-	// number of contig bits grouped with first
-	const uint64_t contig = _tzcnt_u64(~(curr >> first));
-
 	// carry forward
-	const uint64_t add = curr + (1 << first);
+	const uint64_t add = curr + _blsi_u64(curr);
+
+	// number of contig bits grouped with first
+	const uint64_t contig = _tzcnt_u64(add) - first;
 
 	// original bit positions
 	const uint64_t orig = 0xAAAAAAAAAAAAAAAA; // 0b1010...
 
-	// the bits that are to be reset deposited to their original positions
-	// Both methods here seem to have identical speed. The bextr operation
-	// itself is slower but the reduced setup makes up for it
+	// the bits that are moved back to their original position.
+	// I've found quite a bit of speedup through these iterations
 	// const uint64_t rst = _pdep_u64((1 << (contig - 1)) - 1, orig);
-	// const uint64_t rst = _bextr_u64(orig, 0, contig * 2 - 2);
 	// const uint64_t rst = orig & ((1 << (contig * 2 - 1)) - 1);
-	const uint64_t rst = orig & ((1 << ((contig << 1) - 1)) - 1);
+	// const uint64_t rst = orig & ((1 << ((contig << 1) - 1)) - 1);
+	// const uint64_t rst = _bextr_u64(orig, 0, contig * 2 - 2);
+	// const uint64_t rst = _bzhi_u64(orig, contig * 2 - 1);
+	// const uint64_t rst = _pdep_u64((_blsi_u64(add) >> (first + 1)) - 1, orig);
+	// const uint64_t rst = _bzhi_u64(orig << 1, contig * 2) >> 1;
+	// const uint64_t rst = _pdep_u64(_blsmsk_u64(add >> 2) >> first, orig);
+	// const uint64_t rst = _pdep_u64(_blsmsk_u64(add) >> first, orig) >> 4;
+	const uint64_t rst = _pdep_u64(_blsmsk_u64(add) >> (first + 2), orig);
 
 	const uint64_t ret = add | rst;
 
@@ -319,7 +321,6 @@ do_batch(uint64_t paren)
 	#endif
 
 	int i;
-	uint64_t old_paren;
 	uint64_t bcidx;
 	int64_t voff;
 	__m256i resv, bcv;
@@ -339,16 +340,14 @@ do_batch(uint64_t paren)
 	voff = LSIZE;
 	i = 0;
 	bcidx = 0;
-	old_paren = paren;
-	curr = (uint64_t)(uint32_t)paren;
+	curr = (uint32_t)paren;
 	do {
 		// curr = paren >> poff;
-
 		if (voff < 32) {
 			paren = next_paren_bitmask(paren);
-			curr |= ((uint64_t)(uint32_t)paren) << voff;
+			curr |= (uint64_t)(uint32_t)paren << voff;
 			voff += LSIZE;
-		}
+		} 
 		voff -= 32;
 		// print_bits(curr);
 
@@ -396,7 +395,6 @@ do_batch(uint64_t paren)
 		// brings no benefit. Why? let me grab my grimoire so I can
 		// summon the Great Old Ones in search of answers.
 		if (i >= PIPECNT || paren == FIN) {
-			// flush_buf((i) * SIMD_BYTES);
 			currbuf = flush_buf(cursor - currbuf, currbuf);
 			cursor = currbuf;
 			i = 0;
@@ -479,7 +477,6 @@ _start(void)
 		ERROR("Pipe could not be resized");
 	}
 	#endif
-
 
 	// 9 at the end to initialize into correct place
 	// (removed for batching)
