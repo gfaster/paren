@@ -117,6 +117,10 @@
 
 #define unlikely(x) __builtin_expect((x), 0)
 
+#define STR_(x) #x
+#define STR(x) STR_(x)
+
+
 // io buffers need to be 32-byte alligned because otherwise 
 // _mm256_store_si256 generates a general protection fault
 static char __attribute__ ((aligned(BUFALIGN))) buf[DUAL_BUFSIZE];
@@ -168,12 +172,9 @@ mm_print_bytes(__m128i bytes)
 __attribute__((cold)) static void
 gen_bytecode(uint64_t paren)
 {
-	// If I can make sure that two ints always have what I need, maybe
-	// barrel shifted, I can have a bytecode permute. That would work even
-	// if I can't get it perfect with the alignment - the shift can take
-	// care of that for me
-
 	int i;
+
+	(void)paren;
 
 	i = 0;
 	for (; i < BATCH_BYTES; i++) {
@@ -182,9 +183,9 @@ gen_bytecode(uint64_t paren)
 		} else if ((i + 0) % LSIZE >= 32) {
 			// the upper bits are changed less often, so we can
 			// precompute one for a few tens of thousands of lines
-			bytecode[i] = 0x28 + ((paren >> (i % LSIZE)) & 0x1);
+			// bytecode[i] = 0x28 + ((paren >> (i % LSIZE)) & 0x1);
 			// bytecode[i] = '0';
-			// bytecode[i] = 0x28;
+			bytecode[i] = 0x28;
 		} else {
 			bytecode[i] = 0x28;
 		}
@@ -198,6 +199,7 @@ exit_fail(void)
 	exit(2);
 }
 
+[[gnu::noinline]]
 static char *
 flush_buf(size_t bcnt, char *currbuf)
 {
@@ -273,7 +275,8 @@ flush_buf(size_t bcnt, char *currbuf)
  *             = 1011001010 = ()()(())()
  *
  */
-static uint64_t
+[[gnu::always_inline]]
+static inline uint64_t
 next_paren_bitmask(uint64_t curr)
 {
 	// first set bit
@@ -283,7 +286,7 @@ next_paren_bitmask(uint64_t curr)
 	const uint64_t add = curr + _blsi_u64(curr);
 
 	// number of contig bits grouped with first
-	const uint64_t contig = _tzcnt_u64(add) - first;
+	// const uint64_t contig = _tzcnt_u64(add) - first;
 
 	// original bit positions
 	const uint64_t orig = 0xAAAAAAAAAAAAAAAA; // 0b1010...
@@ -306,9 +309,9 @@ next_paren_bitmask(uint64_t curr)
 	// need new bytcode if change in upper dword
 	// This is currently incorrect, we need to do keep the bytecode
 	// consistent across split acesses
-	if (unlikely((0xFFFFFFFF00000000 & add) > curr)) {
-		gen_bytecode(ret);
-	}
+	// if (unlikely((0xFFFFFFFF00000000 & add) > curr)) {
+	// 	gen_bytecode(ret);
+	// }
 
 	return ret;
 }
@@ -404,6 +407,95 @@ do_batch(uint64_t paren)
 	// flush_buf((i) * BATCH_BYTES);
 }
 
+static void 
+do_batch_unrolled_native(uint64_t paren)
+{
+	#if (PSIZE < 32)
+	#error "batch is for lines longer than 32"
+	#endif
+
+	int i, j;
+	int voff, prev_voff;
+	__m256i resv, bcv;
+	uint64_t curr;
+	char *cursor, *currbuf;
+
+	const __m256i shufmask = _mm256_set_epi64x(
+					0x0303030303030303,
+					0x0202020202020202,
+					0x0101010101010101,
+					0x0000000000000000);
+	const __m256i andmask = _mm256_set1_epi64x(0x8040201008040201);
+
+	cursor = buf;
+	currbuf = buf;
+
+	i = 0;
+	curr = paren;
+	do {
+		voff = LSIZE;
+		prev_voff = 0;
+
+		#pragma GCC unroll 9999
+		for (j = 0; j < LSIZE; j++) {
+			if (prev_voff + LSIZE > 64 && prev_voff < 32) {
+				curr |= paren >> (32 - prev_voff);
+			}
+
+			prev_voff = voff;
+
+			if (voff < 32) {
+				paren = next_paren_bitmask(paren);
+				curr |= paren << voff;
+				voff += LSIZE - 32;
+			} else {
+				voff -= 32;
+			}
+
+			bcv = _mm256_load_si256((__m256i *)&bytecode[j * 32]);
+
+			// trying to find a 256-bit deposit equivalent if we
+			// move each byte of the 32-bit paren to the qword it
+			// belongs to, we can just AND it with that bit set
+
+			// only need the low 32 bits of each lane set, but this
+			// is fine
+			resv = _mm256_set1_epi32(curr);
+
+			// move the byte of paren that has the bit in the
+			// corresponding position in the vector to that
+			// position.
+			resv = _mm256_shuffle_epi8(resv, shufmask);
+
+			// only let the correct bit be set
+			resv = _mm256_and_si256(resv, andmask);
+
+			// set all nonzero bytes to -1
+			// reuse andmask because it's a superset of resv
+			resv = _mm256_cmpeq_epi8(resv, andmask);
+
+			// combine with bytecode
+			resv = _mm256_sub_epi8(bcv, resv);
+
+
+			_mm256_store_si256((__m256i *) cursor, resv);
+			cursor += 32;
+
+			curr >>= 32;
+
+			if (i >= PIPECNT || paren == FIN) {
+				currbuf = flush_buf(cursor - currbuf, currbuf);
+				cursor = currbuf;
+				i = 0;
+				if (paren == FIN) {
+					return;
+				}
+			}
+			i += 1;
+		}
+	} while(paren != FIN);
+}
+
 #include "unrolled.generated.h"
 
 static void
@@ -485,7 +577,8 @@ _start(void)
 	paren = PMASK & 0xAAAAAAAAAAAAAAAA;
 	gen_bytecode(paren);
 	// do_batch(paren);
-	do_batch_unrolled(paren);
+	// do_batch_unrolled(paren);
+	do_batch_unrolled_native(paren);
 	// flat_store_bytecode(paren);
 	// flat_store(paren);
 	// flat_flush_buf(paren);

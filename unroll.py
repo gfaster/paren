@@ -4,7 +4,6 @@ def make_macro(name, body):
 
 def update_paren():
     return """
-        prev = paren;
         paren = next_paren_bitmask(paren);
     """
 
@@ -86,10 +85,8 @@ def loop_pre():
 	#endif
 
 	int i;
-	uint64_t bcidx;
-	int64_t voff;
-	__m256i resv, bcv;
-	uint64_t curr, prev;
+	__m256i resv;
+	uint64_t curr;
 	char *cursor, *currbuf;
 
 	const __m256i shufmask = _mm256_set_epi64x(
@@ -103,7 +100,6 @@ def loop_pre():
 	currbuf = buf;
 
 	i = 0;
-	bcidx = 0;
 	curr = paren;
     """
 
