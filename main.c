@@ -33,7 +33,9 @@
 })
 
 // number of parenthesis pairs
+#ifndef SIZE
 #define SIZE 20
+#endif
 
 // number of parenthesis characters in output
 #define PSIZE (SIZE * 2)
@@ -67,9 +69,9 @@
 // this is the size of the SIMD REGISTER
 #define SIMD_BYTES 32
 
-#if (LSIZE < 32)
-#error "need code for shorter lines"
-#endif
+// #if (LSIZE < 32)
+// #error "need code for shorter lines"
+// #endif
 #if ((LSIZE & 1) == 0)
 #error "LSIZE should be odd how tf did this happen"
 #endif
@@ -77,7 +79,7 @@
 // number of store operations in a batch
 #define BATCH_STORE (LSIZE)
 
-#if SIZE < 16 || SIZE >= 32
+#if SIZE < 1 || SIZE >= 32
 #error "unsupported size"
 #endif
 
@@ -101,7 +103,7 @@
 
 
 // number of batch writes that fit in a pipe
-#define PIPECNT ((CACHESIZE / SIMD_BYTES))
+#define PIPECNT (((CACHESIZE) / SIMD_BYTES))
 
 
 // https://stackoverflow.com/a/1898487
@@ -130,9 +132,9 @@ static char __attribute__ ((aligned(BUFALIGN))) buf[DUAL_BUFSIZE];
 static char __attribute__ ((aligned(32))) bytecode[BATCH_BYTES];
 
 
-#if (PSIZE < 32)
-#error "bytecode and batch cannot handle smaller than 32"
-#endif
+// #if (PSIZE < 32)
+// #error "bytecode and batch cannot handle smaller than 32"
+// #endif
 
 static void
 print_bits(uint64_t bits)
@@ -218,8 +220,7 @@ flush_buf(size_t bcnt, char *currbuf)
 	// using vmsplice to reduce write(2) overhead
 	rem = bcnt;
 	amt = 0;
-	do {
-		rem -= amt;
+	while(rem > 0) {
 		iov.iov_len = rem;
 		iov.iov_base += amt;
 
@@ -231,7 +232,8 @@ flush_buf(size_t bcnt, char *currbuf)
 		if (unlikely(amt == -1)) {
 			ERROR("writing error");
 		}
-	} while (rem > 0);
+		rem -= amt;
+	}
 
 	// swap out other buffer
 	// we do this to be sure the previous pipe is drained
@@ -319,9 +321,9 @@ next_paren_bitmask(uint64_t curr)
 static void 
 do_batch(uint64_t paren)
 {
-	#if (PSIZE < 32)
-	#error "batch is for lines longer than 32"
-	#endif
+	if (PSIZE < 32) {
+		ERROR("batch is for lines longer than 32");
+	}
 
 	int i;
 	uint64_t bcidx;
@@ -410,10 +412,6 @@ do_batch(uint64_t paren)
 static void 
 do_batch_unrolled_native(uint64_t paren)
 {
-	#if (PSIZE < 32)
-	#error "batch is for lines longer than 32"
-	#endif
-
 	int i, j;
 	int voff, prev_voff;
 	__m256i resv, bcv;
@@ -444,13 +442,13 @@ do_batch_unrolled_native(uint64_t paren)
 
 			prev_voff = voff;
 
-			if (voff < 32) {
+			while (voff < 32) {
+				prev_voff = voff;
 				paren = next_paren_bitmask(paren);
 				curr |= paren << voff;
-				voff += LSIZE - 32;
-			} else {
-				voff -= 32;
-			}
+				voff += LSIZE;
+			} 
+			voff -= 32;
 
 			bcv = _mm256_load_si256((__m256i *)&bytecode[j * 32]);
 
@@ -493,6 +491,9 @@ do_batch_unrolled_native(uint64_t paren)
 			}
 			i += 1;
 		}
+
+		paren = next_paren_bitmask(paren);
+		curr = paren;
 	} while(paren != FIN);
 }
 

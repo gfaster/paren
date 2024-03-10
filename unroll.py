@@ -80,10 +80,7 @@ def loop_tail(unroll):
 
 def loop_pre():
     return """
-	#if (PSIZE < 32)
-	#error "batch is for lines longer than 32"
-	#endif
-
+    ERROR("things to do");
 	int i;
 	__m256i resv;
 	uint64_t curr;
