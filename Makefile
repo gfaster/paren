@@ -1,7 +1,7 @@
 CFLAGS=-Wall -Wextra -march=native -Wno-unused-function -fno-strict-aliasing
 OPTFLAGS=-ffat-lto-objects -flto -mtune=native
 
-paren: main.c
+paren: main.c unrolled.generated.h
 	gcc -g -O3 $(CFLAGS) $(OPTFLAGS) main.c -c -o paren.o
 	ld -flto -I /lib64/ld-linux-x86-64.so.2 paren.o -o paren -lc
 
@@ -11,6 +11,11 @@ validate: validate.c
 debug: main.c
 	gcc -DDEBUG -O0 -c -g $(CFLAGS) main.c -o paren.o
 	ld -I /lib64/ld-linux-x86-64.so.2 paren.o -o paren -lc
+
+unrolled.generated.h: unroll.py
+	python3 ./unroll.py
+
+main.c: unrolled.generated.h
 
 tspeed: paren
 	timeout 15 taskset 1 ./paren | taskset 2 pv -ra -B 256K > /dev/null
@@ -42,5 +47,6 @@ clean:
 	rm -f ./paren
 	rm -f ./paren.o
 	rm -f ./validate
+	rm *.generated.h
 
 

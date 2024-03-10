@@ -404,6 +404,8 @@ do_batch(uint64_t paren)
 	// flush_buf((i) * BATCH_BYTES);
 }
 
+#include "unrolled.generated.h"
+
 static void
 flat_store(uint64_t paren)
 {
@@ -482,7 +484,8 @@ _start(void)
 	// (removed for batching)
 	paren = PMASK & 0xAAAAAAAAAAAAAAAA;
 	gen_bytecode(paren);
-	do_batch(paren);
+	// do_batch(paren);
+	do_batch_unrolled(paren);
 	// flat_store_bytecode(paren);
 	// flat_store(paren);
 	// flat_flush_buf(paren);
